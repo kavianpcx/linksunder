@@ -73,6 +73,7 @@ try {
   await page.getByLabel('Scenario name').fill('Desktop application smoke test');
   await page.getByRole('button', { name: 'Add step' }).click();
   await page.getByLabel('Step 1 selector').fill('#note');
+  await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
   await page.getByRole('button', { name: 'Run Test', exact: true }).click();
   await page.getByRole('link', { name: 'Download JSON Report' }).waitFor({ timeout: 30000 });
   assert.equal(await page.locator('.heading .badge').textContent(), 'pass');

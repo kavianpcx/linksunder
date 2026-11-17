@@ -47,6 +47,8 @@ let active: AbortController | undefined;
 let activeTask: Promise<void> | undefined;
 let activeNetwork: AbortController | undefined;
 let activeNetworkTask: Promise<void> | undefined;
+let activeReservation: 'run' | 'network' | undefined;
+const executionBusy = () => Boolean(active || activeNetwork || activeReservation);
 app.addHook('onRequest', async (req, reply) => {
   if (req.headers.host !== new URL(origin).host)
     return reply.code(403).send({ error: 'Invalid host.' });
@@ -71,7 +73,7 @@ async function persistSettings() {
   await persistReportDirectoryPreference(settingsFile, data);
 }
 async function start(raw: unknown) {
-  if (active || activeNetwork)
+  if (executionBusy())
     throw Object.assign(new Error('Another run is active. Cancel it or wait.'), {
       statusCode: 409,
     });
@@ -84,32 +86,40 @@ async function start(raw: unknown) {
       ),
       { statusCode: 400 },
     );
-  await validateTarget(parsed.data.url, parsed.data.externalConsent);
-  const run = newRun(parsed.data);
-  runs.set(run.id, run);
-  const controller = new AbortController();
-  active = controller;
-  activeTask = execute(parsed.data, run, controller.signal)
-    .catch(() => {
-      run.status = controller.signal.aborted ? 'cancelled' : 'error';
-      run.error =
-        'The test browser could not start. Restart LinkSunder or reinstall the desktop application.';
-    })
-    .finally(async () => {
-      try {
-        await persist(run);
-      } catch {
-        run.status = 'error';
-        run.error = 'Report could not be saved. Check disk permissions.';
-      } finally {
-        active = undefined;
-      }
-    });
-  return run;
+  activeReservation = 'run';
+  try {
+    await validateTarget(parsed.data.url, parsed.data.externalConsent);
+    const run = newRun(parsed.data);
+    runs.set(run.id, run);
+    const controller = new AbortController();
+    active = controller;
+    activeTask = execute(parsed.data, run, controller.signal)
+      .catch(() => {
+        run.status = controller.signal.aborted ? 'cancelled' : 'error';
+        run.error =
+          'The test browser could not start. Restart LinkSunder or reinstall the desktop application.';
+      })
+      .finally(async () => {
+        try {
+          await persist(run);
+        } catch {
+          run.status = 'error';
+          run.error = 'Report could not be saved. Check disk permissions.';
+        } finally {
+          active = undefined;
+          activeTask = undefined;
+          activeReservation = undefined;
+        }
+      });
+    return run;
+  } catch (error) {
+    if (!active) activeReservation = undefined;
+    throw error;
+  }
 }
 app.get('/api/info', async () => ({ reportDirectory: data, damagedReports }));
 app.post('/api/settings/report-directory', async (req, reply) => {
-  if (active || activeNetwork) return reply.code(409).send({ error: 'Wait for the current check to finish before changing report storage.' });
+  if (executionBusy()) return reply.code(409).send({ error: 'Wait for the current check to finish before changing report storage.' });
   const body = req.body as { path?: unknown };
   const selectedPath = typeof body?.path === 'string' ? body.path.trim() : '';
   if (!selectedPath || !path.isAbsolute(selectedPath))
@@ -166,7 +176,7 @@ app.get<{ Params: { id: string; format: string } }>(
   },
 );
 app.post('/api/network/scans', async (req, reply) => {
-  if (active || activeNetwork) return reply.code(409).send({ error: 'Wait for the current check to finish before starting another.' });
+  if (executionBusy()) return reply.code(409).send({ error: 'Wait for the current check to finish before starting another.' });
   const parsed = networkInspectionSchema.safeParse(req.body);
   if (!parsed.success) {
     const authorizationMissing = parsed.error.issues.some((issue) => issue.path[0] === 'authorized');
@@ -199,10 +209,12 @@ app.post('/api/network/scans', async (req, reply) => {
   };
   const controller = new AbortController();
   networkReports.set(id, report);
+  activeReservation = 'network';
   try {
     await persistNetwork(report);
   } catch {
     networkReports.delete(id);
+    activeReservation = undefined;
     return reply.code(500).send({ error: 'The inspection could not be started because the report folder is not writable.' });
   }
   activeNetwork = controller;
@@ -223,6 +235,7 @@ app.post('/api/network/scans', async (req, reply) => {
     .finally(() => {
       activeNetwork = undefined;
       activeNetworkTask = undefined;
+      activeReservation = undefined;
     });
   return report;
 });
@@ -274,7 +287,7 @@ app.post('/api/cancel', async () => {
   return { ok: true };
 });
 app.post('/api/demo', async (_req, reply) => {
-  if (active || activeNetwork) return reply.code(409).send({ error: 'Another check is active.' });
+  if (executionBusy()) return reply.code(409).send({ error: 'Another check is active.' });
   const first = await start(demoScenario(origin, 'broken'));
   return { id: first.id, next: demoScenario(origin, 'fixed') };
 });

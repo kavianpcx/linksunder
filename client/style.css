@@ -274,8 +274,16 @@ p {
   color: #1c1734;
   box-shadow: 0 4px 20px #8b73ff17;
 }
-.primary:hover {
+.primary:hover:not(:disabled) {
   filter: brightness(1.08);
+}
+.primary:active:not(:disabled),
+.secondary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.primary:disabled {
+  box-shadow: none;
+  filter: saturate(0.65);
 }
 .secondary {
   border: 1px solid var(--line);
@@ -621,6 +629,23 @@ textarea {
   font-size: 11px;
   color: var(--muted);
 }
+.permission-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0 16px 27px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.permission-hint svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent);
+}
+.spin {
+  animation: spin 750ms linear infinite;
+}
 .stepedit {
   display: flex;
   align-items: center;
@@ -742,6 +767,11 @@ td small {
   color: #ffb4b4;
   border: 1px solid #9c626b;
 }
+.badge.warn {
+  background: #6d512826;
+  color: #ead18e;
+  border: 1px solid #8a7444;
+}
 .badge.running {
   color: #c9c1ff;
   animation: pulse 1.4s infinite;
@@ -845,6 +875,11 @@ dd {
 [data-theme='light'] .badge.fail,
 [data-theme='light'] .badge.error {
   color: #9a2634;
+}
+[data-theme='light'] .badge.warn {
+  color: #74560c;
+  background: #f3ead3;
+  border-color: #d4bd7f;
 }
 @keyframes pulse {
   50% {
@@ -1480,7 +1515,7 @@ dd {
   background: var(--input);
 }
 .consent-note {
-  margin: -8px 0 18px 27px;
+  margin: 0 0 18px 27px;
   max-width: 850px;
   font-size: 11px;
 }

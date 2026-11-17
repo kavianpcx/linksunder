@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
@@ -13,14 +13,18 @@ import {
   LayoutDashboard,
   ListChecks,
   FolderOpen,
+  LoaderCircle,
   Maximize2,
   Minimize2,
   Minus,
   Network,
   Moon,
+  Play,
   Plus,
+  Save,
   Settings,
   ShieldCheck,
+  Square,
   Sun,
   Trash2,
   WifiOff,
@@ -82,6 +86,8 @@ function App() {
   const [scenario, setScenario] = useState<Scenario>(initial);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const [cancelling, setCancelling] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [timeout, setTimeoutValue] = useState(Number(localStorage.getItem('timeout') || 10000));
   const [defaultScreenshots, setDefaultScreenshots] = useState(localStorage.getItem('defaultScreenshots') === 'true');
@@ -143,7 +149,8 @@ function App() {
       setError('Enter a scenario name, valid URL and valid settings before saving.');
       return;
     }
-    const next = [...savedScenarios.filter((s) => s.name !== result.data.name), result.data];
+    const safeScenario = { ...result.data, externalConsent: false };
+    const next = [...savedScenarios.filter((s) => s.name !== safeScenario.name), safeScenario];
     localStorage.setItem('scenarios', JSON.stringify(next));
     setSavedScenarios(next);
     setSavedScenarioName(result.data.name);
@@ -166,7 +173,10 @@ function App() {
     const poll = async () => {
       try {
         const r = await api<Run>('/api/runs/' + selected.id);
-        if (live) setSelected(r);
+        if (live) {
+          setSelected(r);
+          if (r.status !== 'running') setCancelling(false);
+        }
       } catch (e) {
         if (live) setError((e as Error).message);
       }
@@ -200,6 +210,8 @@ function App() {
     }
   }, [selected?.status, nextDemo]);
   async function perform(fn: () => Promise<void>) {
+    if (pendingRef.current) return;
+    pendingRef.current = true;
     setPending(true);
     setError('');
     try {
@@ -207,6 +219,7 @@ function App() {
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      pendingRef.current = false;
       setPending(false);
     }
   }
@@ -306,6 +319,7 @@ function App() {
     [steps[i], steps[i + d]] = [steps[i + d], steps[i]];
     setScenario({ ...scenario, steps });
   };
+  const scenarioValid = scenarioSchema.safeParse(scenario).success;
   return (
     <>
       {window.linksunderDesktop && (
@@ -573,6 +587,7 @@ function App() {
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
+                  if (pendingRef.current || active || !scenario.externalConsent) return;
                   void perform(async () => {
                     const parsed = scenarioSchema.parse(scenario);
                     const r = await api<Run>('/api/runs', parsed);
@@ -586,7 +601,7 @@ function App() {
                   {notice && <p role="status">{notice}</p>}
                   <div className="buttons">
                     <button type="button" className="secondary" onClick={saveScenario}>
-                      Save scenario
+                      <Save size={16} /> Save scenario
                     </button>
                   </div>
                   {savedScenarios.length > 0 && (
@@ -598,7 +613,7 @@ function App() {
                       onChange={(name) => {
                         const saved = savedScenarios.find((scenarioOption) => scenarioOption.name === name);
                         if (saved) {
-                          setScenario(saved);
+                          setScenario({ ...saved, externalConsent: false });
                           setSavedScenarioName(name);
                           setNotice('Saved scenario loaded.');
                         }
@@ -625,8 +640,13 @@ function App() {
                       <input
                         type="url"
                         required
+                        disabled={pending || active}
                         value={scenario.url}
-                        onChange={(e) => setScenario({ ...scenario, url: e.target.value })}
+                        onChange={(e) => setScenario((current) => ({
+                          ...current,
+                          url: e.target.value,
+                          externalConsent: current.url === e.target.value ? current.externalConsent : false,
+                        }))}
                       />
                     </label>
                   </div>
@@ -636,16 +656,22 @@ function App() {
                     options={testTypeOptions}
                     onChange={(value) => setScenario({ ...scenario, type: value as Scenario['type'] })}
                   />
-                  <label className="checkbox">
+                  <label className="checkbox authorization-check">
                     <input
                       type="checkbox"
                       checked={scenario.externalConsent}
+                      disabled={pending || active}
+                      aria-describedby="scenario-authorization-help"
                       onChange={(e) =>
                         setScenario({ ...scenario, externalConsent: e.target.checked })
                       }
                     />{' '}
-                    I own or have permission to test this external site.
+                    I own this server or have permission to test it.
                   </label>
+                  <p id="scenario-authorization-help" className="permission-hint" role="note">
+                    <ShieldCheck size={15} aria-hidden="true" />
+                    Confirm that you own or have permission to test this target before starting.
+                  </p>
                   <p className="hint">
                     No steps? Quick Scan records observations only. Add Check Element or Check Field
                     Value to earn a PASS or FAIL.
@@ -834,7 +860,7 @@ function App() {
                       className="secondary"
                       onClick={() => {
                         try {
-                          setScenario(scenarioSchema.parse(JSON.parse(json)));
+                          setScenario({ ...scenarioSchema.parse(JSON.parse(json)), externalConsent: false });
                           setError('');
                         } catch {
                           setError('Invalid scenario JSON. Check the schema and values.');
@@ -848,8 +874,9 @@ function App() {
                     </button>
                   </div>
                 </details>
-                <button className="primary" disabled={pending || active}>
-                  {pending ? 'Starting Chromium…' : 'Run Test'} <ChevronRight size={16} />
+                <button className="primary" disabled={pending || active || !scenario.externalConsent || !scenarioValid} aria-describedby="scenario-authorization-help" aria-busy={pending || active}>
+                  {pending || active ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
+                  {pending ? 'Starting test…' : active ? 'Test running…' : 'Run Test'}
                 </button>
               </form>
             </>
@@ -925,15 +952,21 @@ function App() {
               <div className="buttons">
                 {selected.status === 'running' ? (
                   <button
+                    type="button"
                     className="secondary"
+                    disabled={cancelling}
+                    aria-busy={cancelling}
                     onClick={() => {
                       setNextDemo(undefined);
-                      void perform(async () => {
-                        await api('/api/cancel', {});
+                      setCancelling(true);
+                      void api('/api/cancel', {}).catch((reason) => {
+                        setCancelling(false);
+                        setError((reason as Error).message);
                       });
                     }}
                   >
-                    Cancel run
+                    {cancelling ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Square size={15} aria-hidden="true" />}
+                    {cancelling ? 'Stopping…' : 'Cancel run'}
                   </button>
                 ) : (
                   ['html', 'json'].map((f) => (
