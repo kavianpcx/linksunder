@@ -5,7 +5,7 @@
 
 ## دانلود نرم‌افزار
 
-**[⬇ دانلود برای ویندوز — فایل نصب EXE](https://github.com/kavianpcx/linksunder/releases/download/v0.2.0/LinkSunder-0.2.0-Windows-x64.exe)** · **[⬇ دانلود برای لینوکس — فایل نصب DEB](https://github.com/kavianpcx/linksunder/releases/download/v0.2.0/LinkSunder-0.2.0-Linux-amd64.deb)**
+**[⬇ دانلود برای ویندوز — فایل نصب EXE](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Windows-x64.exe)** · **[⬇ دانلود برای لینوکس — فایل نصب DEB](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Linux-amd64.deb)**
 
 **دانلود کنید ← نصب کنید ← LinkSunder را باز کنید.** هیچ دستور ترمینالی یا ابزار برنامه‌نویسی لازم نیست.
 در ویندوز، روی فایل EXE دانلودشده دوبار کلیک کنید، نصب را تمام کنید و برنامه را از منوی Start یا میان‌بر دسکتاپ باز کنید.
@@ -19,10 +19,10 @@
 این محصول یک برنامه دسکتاپ با موتور واقعی تست است؛ نسخه محدود به دمو، آزمایشی یا
 دارای امکانات پولی نیست. کاربر عادی لازم نیست Node، npm، Git یا Playwright نصب کند.
 
-- **Windows:** [فایل نصب EXE را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.2.0/LinkSunder-0.2.0-Windows-x64.exe)؛ پس از نصب، LinkSunder را از منوی Start
-  یا میان‌بر دسکتاپ اجرا کنید. فایل ZIP نیز نسخه قابل‌حمل است؛ کل پوشه را استخراج کنید.
-- **Linux:** [فایل DEB را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.2.0/LinkSunder-0.2.0-Linux-amd64.deb) و در Ubuntu/Debian با نصب‌کننده گرافیکی سیستم باز کنید؛
-  سپس برنامه را از فهرست Applications اجرا کنید. AppImage هم برای محیط‌های سازگار ارائه می‌شود.
+- **Windows:** [فایل نصب EXE را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Windows-x64.exe)؛ پس از نصب، LinkSunder را از منوی Start یا میان‌بر دسکتاپ اجرا کنید.
+  برای نسخه قابل‌حمل، [فایل ZIP را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Windows-x64.zip)، کل پوشه را استخراج کنید و LinkSunder.exe را باز کنید.
+- **Linux:** [فایل نصب DEB را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Linux-amd64.deb) و در Ubuntu/Debian با نصب‌کننده گرافیکی سیستم باز کنید؛ سپس برنامه را از فهرست Applications اجرا کنید.
+  در محیط‌های سازگار، [فایل AppImage را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Linux-x86_64.AppImage) و مجوز اجرا را از Properties فعال کنید.
 - موتور تست و Chromium داخل بسته هستند؛ با باز و بسته‌شدن برنامه خودکار شروع و متوقف می‌شوند.
 - اطلاعات اجرا خارج از محل نصب، در پوشه داده برنامه ذخیره می‌شود. Download Report
   اجازه می‌دهد گزارش را در محل دلخواه ذخیره کنید.

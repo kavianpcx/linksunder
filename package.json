@@ -1,6 +1,6 @@
 {
   "name": "linksunder",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Local, assertion-driven network resilience testing with Playwright",

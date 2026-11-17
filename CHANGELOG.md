@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Added a single-target Network Inspector for DNS, bounded TCP reachability, safe HTTP header checks, TLS certificate summaries, findings, cancellation, and JSON/HTML exports.
+- Added searchable unified history for resilience tests and network inspections, with confirmed individual, bulk, and clear-all deletion.
+- Added configurable local report storage with verified copy migration, persistent preferences, and safer Electron folder selection and window controls.
+- Refined the desktop interface with accessible custom dropdowns, theme-aware scrollbars, consistent form controls, keyboard focus handling, tooltips, and responsive layouts.
+- Expanded English and Persian guides, screenshots, safety boundaries, and Windows/Linux desktop release automation.
+
 ## 0.2.0
 
 - Desktop application with an isolated Electron window and automatically managed local engine.
