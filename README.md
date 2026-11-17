@@ -101,8 +101,59 @@ The demo uses no external service. Its two results are saved to your real histor
 - Chromium network emulation and controlled HTTP 503 responses.
 - Opt-in masked screenshots, cancellation, bounded timeouts, and isolated contexts.
 - Self-contained offline HTML reports and JSON exports, persisted locally.
+- A single-host Network Inspector for DNS records, bounded TCP reachability checks,
+  HTTP response headers, TLS certificate basics, and practical findings.
+- Searchable combined history for resilience and network reports, with confirmed
+  single, bulk, or clear-all deletion.
+- Settings for report storage, appearance, default timeout, and screenshot preference.
 - No assertion means **OBSERVED**, never PASS. Failed assertions produce FAIL;
   setup/action errors produce ERROR, and stopped runs produce CANCELLED.
+
+## Network Inspector
+
+Use this overview only for a system you own or are explicitly authorized to inspect.
+The app requires an authorization confirmation before a check begins. It handles one
+host at a time, allows up to 20 unique TCP ports, checks at most four ports in parallel,
+and limits each connection timeout to three seconds.
+
+- DNS: A, AAAA, CNAME, NS and MX records, plus reverse lookups for up to three
+  resolved addresses.
+- TCP: **OPEN** means the connection was accepted; **CLOSED** means it was refused;
+  **UNKNOWN** means the host did not respond or could not be reached; **ERROR** means
+  the operating system could not complete the check.
+- HTTP and HTTPS: short `HEAD` requests only, up to five redirects followed only while
+  the hostname stays the same, status and selected response metadata, security-header
+  presence, and cookie security flags. Redirects to another hostname are reported but
+  are not followed.
+- TLS: a basic certificate summary on selected port 443 or 8443, including trust,
+  hostname mismatch, validity dates, expiry, protocol and fingerprint when available.
+- Findings use Info, Low, Medium and High labels to explain observations and possible
+  next steps. They are guidance, not a vulnerability verdict.
+
+The inspector does not scan address ranges, exploit services, authenticate, or send
+credentials. It does not read response bodies or save cookie values. Query strings and
+fragments are removed before checks. TCP reachability, a missing header, or a TLS
+summary alone does not establish that a system is vulnerable. This is not a full
+penetration test, cryptographic assessment, or substitute for a security review.
+
+![Network Inspector report from a local test target](docs/screenshots/network-inspector.png)
+
+![Searchable local test history](docs/screenshots/history.png)
+
+## Reports and preferences
+
+The **Reports & history** page combines resilience runs and network inspections. Search
+by name or target, open a saved result, download it again as JSON or standalone HTML,
+or delete one, selected reports, or all completed history after confirmation. Running
+checks cannot be deleted. Reports stay on this computer until you remove them; automatic
+retention cleanup is not enabled.
+
+In **Settings**, choose a report folder with Browse or enter an absolute path. LinkSunder
+checks that the folder can be written, copies JSON and HTML reports, verifies each copy
+with SHA-256, and keeps the original files. The selected folder is saved for future
+launches. Corrupted report files are left in place and counted so they can be recovered;
+they are not silently discarded. Appearance, default step timeout and screenshot
+preference are stored locally. Reset defaults does not move or delete report files.
 
 ## How it works
 
@@ -126,11 +177,14 @@ shared/   Zod scenario schema and shared result types
 demo/     Deliberately broken and corrected local form
 tests/    Unit, browser integration and dashboard E2E tests
 docs/     Scenarios, screenshots, release notes and launch drafts
+desktop/  Electron window, isolated preload bridge, and packaging configuration
 ```
 
 The server binds only to `127.0.0.1`. The dashboard, API and demo share one port.
-`PORT` changes it. `LINKSUNDER_DATA` selects a report directory; it is an operator
-environment setting, never a path accepted from a browser request.
+`PORT` changes it. `LINKSUNDER_DATA` selects the initial report directory; it is an
+operator environment setting, never a path accepted from a browser request. In the
+desktop app, reports and settings live in the operating system's LinkSunder app-data
+folder unless the user selects another report directory.
 
 ## Safety and limits
 

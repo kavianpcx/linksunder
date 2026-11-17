@@ -1,5 +1,6 @@
+/* global getComputedStyle */
 import { _electron as electron } from 'playwright';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -25,6 +26,39 @@ try {
   assert.equal(preferences.nodeIntegration, false);
   assert.equal(preferences.contextIsolation, true);
   assert.equal(preferences.sandbox, true);
+  await page.getByRole('toolbar', { name: 'Window controls' }).waitFor();
+  assert.equal(
+    await page.locator('.window-chrome').evaluate((element) => getComputedStyle(element).webkitAppRegion),
+    'drag',
+  );
+  assert.equal(
+    await page.locator('.window-controls').evaluate((element) => getComputedStyle(element).webkitAppRegion),
+    'no-drag',
+  );
+  assert.equal(await page.locator('main').evaluate((element) => getComputedStyle(element).overflowY), 'auto');
+  assert.equal(await page.locator('aside').evaluate((element) => getComputedStyle(element).overflowY), 'auto');
+  assert.equal(await page.locator('html').evaluate((element) => getComputedStyle(element).scrollbarWidth), 'thin');
+  const main = page.locator('main');
+  await main.evaluate((element) => { element.scrollTop = 0; });
+  await page.mouse.move(1000, 780);
+  await page.mouse.wheel(0, 240);
+  await page.waitForTimeout(100);
+  assert.ok(await main.evaluate((element) => element.scrollTop > 0), 'The main workspace must respond to wheel scrolling.');
+  await main.evaluate((element) => element.scrollTo(0, 0));
+  await mkdir('test-results', { recursive: true });
+  await page.screenshot({ path: 'test-results/desktop-titlebar.png' });
+  await page.getByRole('button', { name: 'Maximize window' }).click();
+  await page.getByRole('button', { name: 'Restore window' }).waitFor();
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMaximized()), true);
+  await page.getByRole('button', { name: 'Restore window' }).click();
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMaximized()), false);
+  await page.locator('.window-app-title').dblclick();
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMaximized()), true);
+  await page.locator('.window-app-title').dblclick();
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMaximized()), false);
+  await page.getByRole('button', { name: 'Minimize window' }).click();
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized()), true);
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
   await page.getByRole('button', { name: 'New test', exact: true }).click();
   await page.getByLabel('Scenario name').fill('Desktop application smoke test');
   await page.getByRole('button', { name: 'Add step' }).click();
@@ -36,7 +70,10 @@ try {
   const runs = await page.evaluate(async () => (await fetch('/api/runs')).json());
   assert.equal(runs.length, 1);
   assert.ok(runs[0].duration > 0);
-  await app.close();
+  const closed = page.waitForEvent('close');
+  await page.getByRole('button', { name: 'Close window' }).click();
+  await closed;
+  await app.close().catch(() => {});
   await new Promise((resolve) => setTimeout(resolve, 1200));
   await assert.rejects(fetch(origin + '/api/runs'), 'Closing the app must stop its local server');
   console.log(
