@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "url": {
+      "type": "string",
+      "maxLength": 2000,
+      "format": "uri"
+    },
+    "type": {
+      "default": "offline",
+      "type": "string",
+      "enum": [
+        "offline",
+        "failure",
+        "slow"
+      ]
+    },
+    "externalConsent": {
+      "default": false,
+      "type": "boolean"
+    },
+    "timeout": {
+      "default": 10000,
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 30000
+    },
+    "screenshots": {
+      "default": false,
+      "type": "boolean"
+    },
+    "maskSelectors": {
+      "default": [],
+      "maxItems": 20,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "steps": {
+      "default": [],
+      "maxItems": 50,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "open",
+              "click",
+              "fill",
+              "offline",
+              "online",
+              "fail",
+              "delay",
+              "check",
+              "value",
+              "screenshot"
+            ]
+          },
+          "selector": {
+            "default": "",
+            "type": "string",
+            "maxLength": 500
+          },
+          "value": {
+            "default": "",
+            "type": "string",
+            "maxLength": 2000
+          },
+          "path": {
+            "default": "/api/messages",
+            "type": "string",
+            "maxLength": 300
+          },
+          "delay": {
+            "default": 1000,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15000
+          }
+        },
+        "required": [
+          "action",
+          "selector",
+          "value",
+          "path",
+          "delay"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "name",
+    "url",
+    "type",
+    "externalConsent",
+    "timeout",
+    "screenshots",
+    "maskSelectors",
+    "steps"
+  ],
+  "additionalProperties": false,
+  "$id": "https://github.com/kavianpcx/linksunder/schema/scenario/v1",
+  "title": "LinkSunder scenario",
+  "description": "A LinkSunder network resilience test scenario.",
+  "x-linksunder-schema-version": 1
+}
