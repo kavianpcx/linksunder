@@ -176,8 +176,18 @@ npm run build
 `npm test` includes real browser integration tests; run setup first. E2E tests use
 fresh subdirectories in `.e2e-data/` and write real screenshots to `docs/screenshots/`.
 Stop the development server before E2E tests (they own port 4317). CI covers checks on
-Linux and Windows. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [roadmap](docs/roadmap.md).
+Linux and Windows. Anyone can fork the project and propose changes without upstream
+write access; see [CONTRIBUTING.md](CONTRIBUTING.md) for the step-by-step guide and
+the [roadmap](docs/roadmap.md) for planned work.
 
 ## License
 
 [MIT](LICENSE). Contributions welcome.
+
+## Original project
+
+LinkSunder is an open-source project originally maintained by
+[kavianpcx](https://github.com/kavianpcx). If you are using a fork, please refer
+to the [official upstream repository](https://github.com/kavianpcx/linksunder)
+for the original project and updates. Linking back to the upstream project is
+appreciated.

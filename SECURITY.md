@@ -18,7 +18,7 @@ errors, headers, cookies, bodies, and full URLs. Screenshots are opt-in and mask
 inputs/textarea/contenteditable/[data-sensitive] plus custom selectors. Other page
 content may still be sensitive. Keep data/ private; encryption at rest is not provided.
 
-For a suspected vulnerability, use GitHub's private vulnerability reporting if
-enabled. Otherwise contact the repository owner privately before sharing exploit
-details; do not put secrets or private reports in public issues. No response-time
-or bounty commitments are made.
+For a suspected vulnerability, use
+[GitHub's private vulnerability reporting form](https://github.com/kavianpcx/linksunder/security/advisories/new).
+Do not put exploit details, secrets, or private reports in a public issue. No
+response-time or bounty commitments are made.

@@ -1,14 +1,55 @@
 name: Bug report
 description: Report a reproducible defect without private data
+labels: [bug]
 body:
   - type: textarea
-    id: reproduction
+    id: problem
     attributes:
-      label: Steps, expected behavior, actual behavior
-      description: Use the bundled demo or a minimal public reproduction. Omit secrets.
+      label: What happened?
+      description: Describe the problem. Do not include passwords, tokens, private URLs, or personal data.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use the bundled demo or a minimal scenario that does not contain private data.
+      placeholder: 1. Open ... 2. Select ... 3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
     validations:
       required: true
   - type: input
     id: environment
     attributes:
-      label: OS, Node and browser versions
+      label: Operating system and version
+      placeholder: Windows 11, Ubuntu 24.04, macOS 15
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: LinkSunder version
+      placeholder: For example, 0.2.0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (optional)
+      description: Remove secrets, private URLs, personal information, and report contents before posting.
+  - type: markdown
+    attributes:
+      value: >-
+        Do not report exploitable security issues here. Use the private reporting
+        instructions in [SECURITY.md](https://github.com/kavianpcx/linksunder/blob/main/SECURITY.md).

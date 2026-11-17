@@ -1,0 +1,9 @@
+# These paths affect the repository's release, security, or desktop boundary.
+# CODEOWNERS requests review; it does not require approval by itself.
+/.github/workflows/ @kavianpcx
+/desktop/ @kavianpcx
+/server/security.ts @kavianpcx
+/scripts/ @kavianpcx
+/electron-builder.yml @kavianpcx
+/package.json @kavianpcx
+/package-lock.json @kavianpcx
