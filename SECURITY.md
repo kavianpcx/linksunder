@@ -1,6 +1,6 @@
 # Security policy
 
-Version 0.1.x is an early local developer tool. Run only trusted scenarios against
+LinkSunder is a local, single-user developer tool. Run only trusted scenarios against
 authorized targets. Do not expose the server to a network or use it as a public API.
 
 The app binds to 127.0.0.1, validates Host/Origin, requires a custom mutation header,
@@ -9,6 +9,14 @@ workers and WebSockets, and closes isolated contexts after runs. HTTP(S) request
 are checked, with redirects fetched one hop at a time. Other local origins and
 nonpublic targets are blocked for external tests; local targets remain an explicit
 developer capability. No arbitrary report paths are accepted through the API.
+
+The Network Inspector requires explicit confirmation for each inspection, handles
+one host at a time, and limits the selected TCP ports, concurrency, and connection
+timeouts. HTTP checks use `HEAD`, do not save response bodies or cookie values, and
+follow only a small number of redirects while the hostname remains unchanged. It
+does not authenticate, exploit services, or scan address ranges. Use it only on
+systems you own or are explicitly authorized to inspect. Its findings are guidance,
+not a vulnerability verdict.
 
 DNS validation is not connection-level pinning; rebinding remains possible. HTTP
 routing is not a complete firewall for browser background traffic or WebRTC. Avoid
