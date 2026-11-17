@@ -17,7 +17,7 @@ describe('scenario JSON Schema', () => {
       description: 'A LinkSunder network resilience test scenario.',
       version: 1,
     });
-    expect(schema).toEqual(toJSONSchema(scenarioSchema));
+    expect(schema).toEqual(toJSONSchema(scenarioSchema, { io: 'input' }));
   });
 
   it('covers valid demos, invalid actions and privacy defaults', () => {
@@ -32,5 +32,16 @@ describe('scenario JSON Schema', () => {
     expect(generated.properties.externalConsent.default).toBe(false);
     expect(generated.properties.screenshots.default).toBe(false);
     expect(generated.properties.steps.items.properties.action.enum).toHaveLength(10);
+  });
+
+  it('keeps fields with runtime defaults optional for JSON inputs', () => {
+    const minimal = {
+      name: 'Minimal scenario',
+      url: 'https://example.test',
+      steps: [{ action: 'check' }],
+    };
+    expect(scenarioSchema.safeParse(minimal).success).toBe(true);
+    expect(generated.required).toEqual(['name', 'url']);
+    expect(generated.properties.steps.items.required).toEqual(['action']);
   });
 });

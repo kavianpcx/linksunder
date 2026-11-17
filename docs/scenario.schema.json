@@ -90,27 +90,15 @@
           }
         },
         "required": [
-          "action",
-          "selector",
-          "value",
-          "path",
-          "delay"
-        ],
-        "additionalProperties": false
+          "action"
+        ]
       }
     }
   },
   "required": [
     "name",
-    "url",
-    "type",
-    "externalConsent",
-    "timeout",
-    "screenshots",
-    "maskSelectors",
-    "steps"
+    "url"
   ],
-  "additionalProperties": false,
   "$id": "https://github.com/kavianpcx/linksunder/schema/scenario/v1",
   "title": "LinkSunder scenario",
   "description": "A LinkSunder network resilience test scenario.",

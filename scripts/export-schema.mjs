@@ -5,7 +5,7 @@ import { toJSONSchema } from 'zod';
 import { scenarioSchema } from '../shared/schema.ts';
 
 const document = {
-  ...toJSONSchema(scenarioSchema),
+  ...toJSONSchema(scenarioSchema, { io: 'input' }),
   $id: 'https://github.com/kavianpcx/linksunder/schema/scenario/v1',
   title: 'LinkSunder scenario',
   description: 'A LinkSunder network resilience test scenario.',
