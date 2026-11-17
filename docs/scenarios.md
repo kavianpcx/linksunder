@@ -32,3 +32,15 @@ Use the Advanced panel to import/export JSON, change timeouts and add screenshot
 masks. Screenshot steps only capture when the screenshot consent checkbox is on.
 Never share scenarios containing private test inputs. Cancellation closes Chromium;
 already completed target-side actions cannot be undone. Use staging/test data.
+
+## JSON Schema
+
+Generate the versioned schema from the shared Zod schema:
+
+```sh
+npm run schema:export
+```
+
+The command writes `docs/scenario.schema.json`. Point a JSON-aware editor at that
+file to get autocomplete and validation for scenario files. The generated schema
+is authoritative; do not edit it by hand.

@@ -9,21 +9,22 @@
     "minimatch": "^11.0.1"
   },
   "engines": {
-    "node": "\u003e=22.12.0"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "setup": "node scripts/setup.mjs",
+    "schema:export": "tsx scripts/export-schema.mjs",
     "dev": "tsx server/index.ts",
-    "build": "vite build \u0026\u0026 tsc -p tsconfig.server.json",
+    "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit \u0026\u0026 tsc -p tsconfig.server.json --noEmit",
-    "desktop:dev": "npm run build \u0026\u0026 electron .",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "desktop:dev": "npm run build && electron .",
     "desktop:browser": "node scripts/bundle-browser.mjs",
-    "desktop:pack": "npm run build \u0026\u0026 electron-builder --dir",
-    "desktop:dist": "npm run build \u0026\u0026 electron-builder --publish never",
+    "desktop:pack": "npm run build && electron-builder --dir",
+    "desktop:dist": "npm run build && electron-builder --publish never",
     "test:desktop": "node scripts/test-desktop.mjs"
   },
   "dependencies": {
