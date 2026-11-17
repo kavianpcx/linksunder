@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
@@ -7,9 +7,16 @@ import {
   Check,
   ChevronRight,
   Copy,
+  FileText,
   Download,
   FlaskConical,
   LayoutDashboard,
+  ListChecks,
+  FolderOpen,
+  Maximize2,
+  Minimize2,
+  Minus,
+  Network,
   Moon,
   Plus,
   Settings,
@@ -28,6 +35,12 @@ import {
   type Run,
 } from '../shared/schema';
 import { formatRunTimestamp } from './format-run-timestamp';
+import { api } from './api';
+import { HistoryPage } from './HistoryPage';
+import { NetworkInspector } from './NetworkInspector';
+import { SelectField } from './SelectField';
+import { NumberField } from './NumberField';
+import type { NetworkReport } from '../shared/network';
 import './style.css';
 import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-600.css';
@@ -43,30 +56,35 @@ const labels: Record<string, string> = {
   value: 'Check Field Value',
   screenshot: 'Take Screenshot',
 };
-async function api<T>(url: string, body?: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-LinkSunder': 'local' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const data = await r.json();
-  if (!r.ok) throw Error(data.error || 'Request failed');
-  return data;
-}
+const actionOptions = actions.map((action) => ({ value: action, label: labels[action] }));
+const testTypeOptions = [
+  { value: 'offline', label: 'Offline Recovery' },
+  { value: 'failure', label: 'API Failure' },
+  { value: 'slow', label: 'Slow API Response' },
+];
+const appearanceOptions = [
+  { value: 'dark', label: 'Dark' },
+  { value: 'light', label: 'Light' },
+];
 const initial = () =>
   scenarioSchema.parse({
     name: 'Untitled resilience test',
     url: window.location.origin + '/demo/fixed',
+    timeout: Number(localStorage.getItem('timeout') || 10000),
+    screenshots: localStorage.getItem('defaultScreenshots') === 'true',
   });
 function App() {
   const [view, setView] = useState('dashboard');
   const [runs, setRuns] = useState<Run[]>([]);
+  const [networkReports, setNetworkReports] = useState<NetworkReport[]>([]);
   const [selected, setSelected] = useState<Run>();
+  const [selectedNetwork, setSelectedNetwork] = useState<NetworkReport>();
   const [scenario, setScenario] = useState<Scenario>(initial);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [timeout, setTimeoutValue] = useState(Number(localStorage.getItem('timeout') || 10000));
+  const [defaultScreenshots, setDefaultScreenshots] = useState(localStorage.getItem('defaultScreenshots') === 'true');
   const [json, setJson] = useState('');
   const [nextDemo, setNextDemo] = useState<Scenario>();
   const [savedScenarios, setSavedScenarios] = useState<Scenario[]>(() => {
@@ -81,12 +99,43 @@ function App() {
       return [];
     }
   });
+  const [savedScenarioName, setSavedScenarioName] = useState('');
   const [notice, setNotice] = useState('');
   const [reportDirectory, setReportDirectory] = useState('Local report storage');
+  const [damagedReports, setDamagedReports] = useState(0);
+  const [storageDraft, setStorageDraft] = useState('');
+  const [storageNotice, setStorageNotice] = useState('');
+  const [storageError, setStorageError] = useState('');
+  const [storageBusy, setStorageBusy] = useState(false);
+  const [windowMaximized, setWindowMaximized] = useState(false);
+  const refreshHistory = useCallback(async () => {
+    try {
+      const [nextRuns, nextNetwork] = await Promise.all([
+        api<Run[]>('/api/runs'),
+        api<NetworkReport[]>('/api/network/reports'),
+      ]);
+      setRuns(nextRuns);
+      setNetworkReports(nextNetwork);
+      setSelectedNetwork((current) => current && !nextNetwork.some((report) => report.id === current.id) ? undefined : current);
+    } catch (reason) {
+      setError((reason as Error).message);
+    }
+  }, []);
+  const onNetworkReportChange = useCallback((report?: NetworkReport) => setSelectedNetwork(report), []);
   useEffect(() => {
-    api<{ reportDirectory: string }>('/api/info')
-      .then((info) => setReportDirectory(info.reportDirectory))
+    api<{ reportDirectory: string; damagedReports?: number }>('/api/info')
+      .then((info) => {
+        setReportDirectory(info.reportDirectory);
+        setStorageDraft(info.reportDirectory);
+        setDamagedReports(info.damagedReports || 0);
+      })
       .catch(() => {});
+  }, []);
+  useEffect(() => {
+    const bridge = window.linksunderDesktop;
+    if (!bridge) return;
+    void bridge.isMaximized().then(setWindowMaximized);
+    return bridge.onWindowState(setWindowMaximized);
   }, []);
   function saveScenario() {
     const result = scenarioSchema.safeParse(scenario);
@@ -97,6 +146,7 @@ function App() {
     const next = [...savedScenarios.filter((s) => s.name !== result.data.name), result.data];
     localStorage.setItem('scenarios', JSON.stringify(next));
     setSavedScenarios(next);
+    setSavedScenarioName(result.data.name);
     setNotice('Scenario saved on this computer.');
   }
   useEffect(() => {
@@ -104,23 +154,12 @@ function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
   useEffect(() => {
-    let live = true;
-    const refresh = () => {
-      api<Run[]>('/api/runs')
-        .then((x) => {
-          if (live) setRuns(x);
-        })
-        .catch((e) => {
-          if (live) setError(e.message);
-        });
-    };
-    refresh();
-    const timer = window.setInterval(refresh, 1000);
+    void refreshHistory();
+    const timer = window.setInterval(() => void refreshHistory(), 1200);
     return () => {
-      live = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [refreshHistory]);
   useEffect(() => {
     if (!selected) return;
     let live = true;
@@ -189,12 +228,73 @@ function App() {
       setView('result');
     });
   }
-  const active = runs.some((r) => r.status === 'running');
+  async function useReportFolder(candidate = storageDraft) {
+    setStorageBusy(true);
+    setStorageNotice('');
+    setStorageError('');
+    try {
+      const result = await api<{ reportDirectory: string; copied: number; total: number; originalsKept?: boolean }>(
+        '/api/settings/report-directory',
+        { path: candidate },
+      );
+      setReportDirectory(result.reportDirectory);
+      setStorageDraft(result.reportDirectory);
+      setStorageNotice(
+        result.copied
+          ? `Storage changed. ${result.copied} of ${result.total} report files copied and verified. The original files were kept.`
+          : 'Storage folder updated. Existing report files were kept.',
+      );
+      await refreshHistory();
+    } catch (reason) {
+      setStorageError((reason as Error).message);
+    } finally {
+      setStorageBusy(false);
+    }
+  }
+  async function browseReportFolder() {
+    const bridge = window.linksunderDesktop;
+    if (!bridge) {
+      setStorageError('Use the folder picker in the installed desktop app, or enter an absolute folder path above.');
+      return;
+    }
+    try {
+      const selectedPath = await bridge.chooseReportDirectory();
+      if (selectedPath) {
+        setStorageDraft(selectedPath);
+        await useReportFolder(selectedPath);
+      }
+    } catch (reason) {
+      setStorageError((reason as Error).message);
+    }
+  }
+  async function openReportFolder() {
+    try {
+      const result = await window.linksunderDesktop?.openReportDirectory();
+      if (result && !result.ok) setStorageError(result.error || 'The report folder could not be opened.');
+    } catch (reason) {
+      setStorageError((reason as Error).message || 'The report folder could not be opened.');
+    }
+  }
+  function resetPreferences() {
+    setTheme('dark');
+    setTimeoutValue(10000);
+    setDefaultScreenshots(false);
+    localStorage.setItem('theme', 'dark');
+    localStorage.setItem('timeout', '10000');
+    localStorage.setItem('defaultScreenshots', 'false');
+    setNotice('Default appearance and test preferences restored. Reports and storage location were not changed.');
+  }
+  useEffect(() => {
+    localStorage.setItem('defaultScreenshots', String(defaultScreenshots));
+  }, [defaultScreenshots]);
+  const active = runs.some((r) => r.status === 'running') || networkReports.some((report) => report.status === 'running');
+  const lastCheck = [...runs.map((run) => ({ started: run.started, status: run.status })), ...networkReports.map((report) => ({ started: report.started, status: report.status }))]
+    .sort((left, right) => Date.parse(right.started) - Date.parse(left.started))[0];
   const stats = [
-    ['Total runs', runs.length],
-    ['Passed', runs.filter((r) => r.status === 'pass').length],
-    ['Failed', runs.filter((r) => r.status === 'fail').length],
-    ['Last result', runs[0]?.status.toUpperCase() || 'NO RUNS'],
+    ['Resilience tests', runs.length],
+    ['Network inspections', networkReports.length],
+    ['Passed tests', runs.filter((r) => r.status === 'pass').length],
+    ['Last check', lastCheck?.status.toUpperCase() || 'NO CHECKS'],
   ];
   const updateStep = (i: number, patch: Partial<Step>) =>
     setScenario({
@@ -207,13 +307,24 @@ function App() {
     setScenario({ ...scenario, steps });
   };
   return (
-    <div className="app">
+    <>
+      {window.linksunderDesktop && (
+        <div className="window-chrome" onDoubleClick={() => void window.linksunderDesktop?.toggleMaximize().then(setWindowMaximized)}>
+          <span className="window-app-title"><span className="window-app-mark"><WifiOff size={14} /></span>LinkSunder <span>Resilience workspace</span></span>
+          <div className="window-controls" role="toolbar" aria-label="Window controls">
+            <button type="button" aria-label="Minimize window" data-tooltip="Minimize" onDoubleClick={(event) => event.stopPropagation()} onClick={() => window.linksunderDesktop?.minimize()}><Minus size={16} /></button>
+            <button type="button" aria-label={windowMaximized ? 'Restore window' : 'Maximize window'} data-tooltip={windowMaximized ? 'Restore' : 'Maximize'} onDoubleClick={(event) => event.stopPropagation()} onClick={() => void window.linksunderDesktop?.toggleMaximize().then(setWindowMaximized)}>{windowMaximized ? <Minimize2 size={15} /> : <Maximize2 size={14} />}</button>
+            <button type="button" className="window-close" aria-label="Close window" data-tooltip="Close" onDoubleClick={(event) => event.stopPropagation()} onClick={() => window.linksunderDesktop?.close()}><X size={17} /></button>
+          </div>
+        </div>
+      )}
+    <div className={window.linksunderDesktop ? 'app app-desktop' : 'app'}>
       <aside>
         <a className="brand" href="#" onClick={() => setView('dashboard')}>
           <span className="brandmark">
             <WifiOff size={20} />
           </span>
-          LinkSunder<span className="version">0.1</span>
+          LinkSunder<span className="version">v{__LINKSUNDER_VERSION__}</span>
         </a>
         <div className="workspace">
           LOCAL WORKSPACE <span>●</span>
@@ -230,6 +341,18 @@ function App() {
             onClick={() => setView('create')}
           >
             <FlaskConical size={17} /> New test
+          </button>
+          <button
+            className={view === 'history' ? 'nav active' : 'nav'}
+            onClick={() => setView('history')}
+          >
+            <ListChecks size={17} /> Reports &amp; history
+          </button>
+          <button
+            className={view === 'network' ? 'nav active' : 'nav'}
+            onClick={() => setView('network')}
+          >
+            <Network size={17} /> Network Inspector
           </button>
           <button
             className={view === 'settings' ? 'nav active' : 'nav'}
@@ -262,6 +385,12 @@ function App() {
                 ? 'New test'
                 : view === 'settings'
                   ? 'Settings'
+                : view === 'history'
+                  ? 'Reports & history'
+                  : view === 'network'
+                    ? 'Network Inspector'
+                    : view === 'network-report'
+                      ? 'Network report'
                   : 'Run details'}
           </span>
           <small>
@@ -289,6 +418,7 @@ function App() {
                   className="primary"
                   onClick={() => {
                     setScenario({ ...initial(), timeout });
+                    setSavedScenarioName('');
                     setView('create');
                   }}
                 >
@@ -348,9 +478,14 @@ function App() {
               <section className="panel">
                 <div className="panel-head">
                   <h2>
-                    Recent runs <span className="count">{runs.length}</span>
+                    Recent resilience tests <span className="count">{runs.length}</span>
                   </h2>
-                  <span>Browser-local time · JSON reports use ISO timestamps</span>
+                  <div className="panel-head-actions">
+                    <span>Browser-local time · JSON reports use ISO timestamps</span>
+                    <button className="secondary compact-button" onClick={() => setView('history')}>
+                      <FileText size={14} /> All reports
+                    </button>
+                  </div>
                 </div>
                 {!runs.length ? (
                   <div className="empty">
@@ -455,28 +590,20 @@ function App() {
                     </button>
                   </div>
                   {savedScenarios.length > 0 && (
-                    <label>
-                      Saved scenarios
-                      <select
-                        defaultValue=""
-                        onChange={(e) => {
-                          const saved = savedScenarios.find((s) => s.name === e.target.value);
-                          if (saved) {
-                            setScenario(saved);
-                            setNotice('Saved scenario loaded.');
-                          }
-                        }}
-                      >
-                        <option value="" disabled>
-                          Choose a saved scenario
-                        </option>
-                        {savedScenarios.map((s) => (
-                          <option key={s.name} value={s.name}>
-                            {s.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <SelectField
+                      label="Saved scenarios"
+                      value={savedScenarioName}
+                      placeholder="Choose a saved scenario"
+                      options={savedScenarios.map((saved) => ({ value: saved.name, label: saved.name }))}
+                      onChange={(name) => {
+                        const saved = savedScenarios.find((scenarioOption) => scenarioOption.name === name);
+                        if (saved) {
+                          setScenario(saved);
+                          setSavedScenarioName(name);
+                          setNotice('Saved scenario loaded.');
+                        }
+                      }}
+                    />
                   )}
                   <p className="hint">
                     Saved scenarios stay on this computer and may contain your test inputs. With
@@ -503,19 +630,12 @@ function App() {
                       />
                     </label>
                   </div>
-                  <label>
-                    Test type
-                    <select
-                      value={scenario.type}
-                      onChange={(e) =>
-                        setScenario({ ...scenario, type: e.target.value as Scenario['type'] })
-                      }
-                    >
-                      <option value="offline">Offline Recovery</option>
-                      <option value="failure">API Failure</option>
-                      <option value="slow">Slow API Response</option>
-                    </select>
-                  </label>
+                  <SelectField
+                    label="Test type"
+                    value={scenario.type}
+                    options={testTypeOptions}
+                    onChange={(value) => setScenario({ ...scenario, type: value as Scenario['type'] })}
+                  />
                   <label className="checkbox">
                     <input
                       type="checkbox"
@@ -538,7 +658,7 @@ function App() {
                       type="button"
                       className="secondary"
                       disabled={scenario.steps.length >= MAX_SCENARIO_STEPS}
-                      title={`Add up to ${MAX_SCENARIO_STEPS} steps`}
+                      data-tooltip={`Add up to ${MAX_SCENARIO_STEPS} steps`}
                       onClick={() =>
                         setScenario({
                           ...scenario,
@@ -563,6 +683,13 @@ function App() {
                       ? `${MAX_SCENARIO_STEPS} of ${MAX_SCENARIO_STEPS} steps. Remove a step before adding or duplicating another.`
                       : `${scenario.steps.length} of ${MAX_SCENARIO_STEPS} steps`}
                   </p>
+                  {scenario.steps.length === 0 && (
+                    <div className="step-empty">
+                      <span className="empty-icon"><ListChecks size={24} /></span>
+                      <div><strong>Choose the behavior you want to verify</strong><p>Add a browser action or an assertion. You can move, copy, and edit each step later.</p></div>
+                      <button type="button" className="secondary" onClick={() => setScenario({ ...scenario, steps: [{ action: 'check', selector: '', value: '', path: '/api/messages', delay: 1000 }] })}><Plus size={15} /> Add first step</button>
+                    </div>
+                  )}
                   {scenario.steps.map((s, i) => (
                     <div className="stepedit" key={i}>
                       <span className="stepnum">{i + 1}</span>
@@ -570,19 +697,13 @@ function App() {
                         <label className="sr-only" htmlFor={'action' + i}>
                           Step {i + 1} action
                         </label>
-                        <select
+                        <SelectField
                           id={'action' + i}
                           value={s.action}
-                          onChange={(e) =>
-                            updateStep(i, { action: e.target.value as Step['action'] })
-                          }
-                        >
-                          {actions.map((a) => (
-                            <option key={a} value={a}>
-                              {labels[a]}
-                            </option>
-                          ))}
-                        </select>
+                          options={actionOptions}
+                          className="step-action-select"
+                          onChange={(value) => updateStep(i, { action: value as Step['action'] })}
+                        />
                         {['click', 'fill', 'check', 'value'].includes(s.action) && (
                           <input
                             aria-label={'Step ' + (i + 1) + ' selector'}
@@ -610,13 +731,12 @@ function App() {
                           />
                         )}
                         {s.action === 'delay' && (
-                          <input
-                            aria-label="Delay milliseconds"
-                            type="number"
-                            min="0"
-                            max="15000"
+                          <NumberField
+                            label="Delay milliseconds"
                             value={s.delay}
-                            onChange={(e) => updateStep(i, { delay: Number(e.target.value) })}
+                            min={0}
+                            max={15000}
+                            onChange={(delay) => updateStep(i, { delay })}
                           />
                         )}
                       </div>
@@ -640,7 +760,7 @@ function App() {
                         <button
                           type="button"
                           aria-label="Duplicate step"
-                          title="Duplicate step"
+                          data-tooltip="Duplicate step"
                           disabled={scenario.steps.length >= MAX_SCENARIO_STEPS}
                           onClick={() =>
                             setScenario({
@@ -673,18 +793,13 @@ function App() {
                 </section>
                 <details className="panel form">
                   <summary>Advanced · privacy, timeout and JSON</summary>
-                  <label>
-                    Step timeout (ms)
-                    <input
-                      type="number"
-                      min="1000"
-                      max="30000"
-                      value={scenario.timeout}
-                      onChange={(e) =>
-                        setScenario({ ...scenario, timeout: Number(e.target.value) })
-                      }
-                    />
-                  </label>
+                  <NumberField
+                    label="Step timeout (ms)"
+                    value={scenario.timeout}
+                    min={1000}
+                    max={30000}
+                    onChange={(value) => setScenario({ ...scenario, timeout: value })}
+                  />
                   <label className="checkbox">
                     <input
                       type="checkbox"
@@ -834,57 +949,82 @@ function App() {
               </p>
             </>
           )}
+          {view === 'history' && (
+            <HistoryPage
+              runs={runs}
+              networkReports={networkReports}
+              onOpenRun={(run) => {
+                setSelected(run);
+                setView('result');
+              }}
+              onOpenNetwork={(report) => {
+                setSelectedNetwork(report);
+                setView('network');
+              }}
+              onRefresh={refreshHistory}
+            />
+          )}
+          {view === 'network' && (
+            <NetworkInspector
+              initialReport={selectedNetwork}
+              onReportChange={onNetworkReportChange}
+              onRefresh={refreshHistory}
+              onOpenHistory={() => setView('history')}
+            />
+          )}
           {view === 'settings' && (
             <>
               <div className="heading">
                 <div>
                   <div className="eyebrow">WORKSPACE PREFERENCES</div>
-                  <h1>A lab that stays local.</h1>
-                  <p>Simple defaults. Explicit permissions.</p>
+                  <h1>Settings</h1>
+                  <p>Choose where reports live and set comfortable defaults for your next check.</p>
                 </div>
+                <button className="secondary" onClick={resetPreferences}>Reset defaults</button>
               </div>
-              <section className="panel form">
+              {notice && <p role="status" className="notice">{notice}</p>}
+              <section className="panel form settings-section">
+                <div className="panel-head"><div><h2>Report storage</h2><p className="hint">Reports stay on this computer. Changing folders copies and verifies them; the previous copies are kept.</p></div></div>
                 <label>
-                  Appearance
-                  <select value={theme} onChange={(e) => setTheme(e.target.value)}>
-                    <option value="dark">Dark</option>
-                    <option value="light">Light</option>
-                  </select>
+                    Report folder path
+                  <input aria-label="Report storage folder" value={storageDraft || reportDirectory} onChange={(event) => setStorageDraft(event.target.value)} spellCheck={false} />
                 </label>
-                <label>
-                  Default step timeout (ms)
-                  <input
-                    type="number"
-                    min="1000"
-                    max="30000"
+                {storageError && <div role="alert" className="alert">{storageError}<button aria-label="Dismiss storage error" onClick={() => setStorageError('')}><X size={15} /></button></div>}
+                {storageNotice && <p role="status" className="notice">{storageNotice}</p>}
+                {damagedReports > 0 && <div role="status" className="notice">{damagedReports} report file{damagedReports === 1 ? ' was' : 's were'} unreadable at startup and {damagedReports === 1 ? 'was' : 'were'} left in the folder unchanged for recovery.</div>}
+                <div className="buttons settings-actions">
+                  <button type="button" className="secondary" onClick={() => void browseReportFolder()} disabled={storageBusy}><FileText size={15} /> Browse…</button>
+                  <button type="button" className="primary" onClick={() => void useReportFolder()} disabled={storageBusy || !storageDraft.trim() || storageDraft.trim() === reportDirectory}>{storageBusy ? 'Copying reports…' : 'Use this folder'}</button>
+                  <button type="button" className="secondary" onClick={() => void openReportFolder()} disabled={!window.linksunderDesktop}><FolderOpen size={15} /> Open folder</button>
+                </div>
+                {!window.linksunderDesktop && <p className="hint">Folder browsing and Open folder are available in the installed desktop app. You can enter an absolute folder path here.</p>}
+              </section>
+              <section className="panel form settings-section">
+                <h2>Default test preferences</h2>
+                <div className="columns">
+                  <SelectField label="Appearance" value={theme} options={appearanceOptions} onChange={setTheme} />
+                  <NumberField
+                    label="Default step timeout (ms)"
                     value={timeout}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      setTimeoutValue(v);
-                      localStorage.setItem('timeout', String(v));
+                    min={1000}
+                    max={30000}
+                    onChange={(value) => {
+                      setTimeoutValue(value);
+                      localStorage.setItem('timeout', String(value));
                     }}
                   />
-                </label>
+                </div>
+                <label className="checkbox preference-checkbox"><input type="checkbox" checked={defaultScreenshots} onChange={(event) => setDefaultScreenshots(event.target.checked)} /> Start new scenarios with screenshots enabled</label>
+                <p className="hint">Screenshots can contain page content. You can change this default for an individual scenario at any time.</p>
+              </section>
+              <section className="panel form settings-section">
+                <h2>Privacy and retention</h2>
                 <dl>
-                  <dt>Report storage</dt>
-                  <dd>
-                    {reportDirectory}. Use Download Report to save a copy wherever you choose.
-                  </dd>
-                  <dt>Browser</dt>
-                  <dd>
-                    Isolated headless Chromium. Service workers blocked; no saved cookies or login
-                    sessions.
-                  </dd>
-                  <dt>Execution security</dt>
-                  <dd>
-                    One active run. Loopback dashboard. External targets require consent. Other
-                    local origins, private and metadata endpoints are blocked during external tests.
-                  </dd>
-                  <dt>Privacy</dt>
-                  <dd>
-                    No telemetry. No request bodies, headers or cookies in reports. Screenshots are
-                    opt-in; form fields and configured selectors are masked.
-                  </dd>
+                  <dt>Report retention</dt><dd>Keep all reports until you delete them. There is no automatic cleanup.</dd>
+                  <dt>Browser</dt><dd>Isolated headless Chromium. Service workers are blocked; saved cookies and login sessions are not used.</dd>
+                  <dt>Resilience test boundaries</dt><dd>One check at a time. External targets require permission. Resilience tests block other local origins and private or metadata endpoints.</dd>
+                  <dt>Network Inspector boundaries</dt><dd>One target at a time, explicit authorization, up to 20 selected TCP ports, and short HEAD requests only. It does not exploit or authenticate.</dd>
+                  <dt>Data privacy</dt><dd>No telemetry. Response bodies and cookie values are not saved. Screenshot masking remains available for resilience tests.</dd>
                 </dl>
               </section>
             </>
@@ -898,6 +1038,7 @@ function App() {
         </div>
       </main>
     </div>
+    </>
   );
 }
 createRoot(document.getElementById('root')!).render(
