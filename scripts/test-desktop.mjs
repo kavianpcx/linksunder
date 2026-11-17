@@ -1,4 +1,4 @@
-/* global getComputedStyle */
+/* global document, getComputedStyle */
 import { _electron as electron } from 'playwright';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -39,10 +39,20 @@ try {
   assert.equal(await page.locator('aside').evaluate((element) => getComputedStyle(element).overflowY), 'auto');
   assert.equal(await page.locator('html').evaluate((element) => getComputedStyle(element).scrollbarWidth), 'thin');
   const main = page.locator('main');
+  assert.ok(
+    await main.evaluate((element) => element.scrollHeight > element.clientHeight),
+    'The main workspace must contain scrollable content at the smoke-test window size.',
+  );
   await main.evaluate((element) => { element.scrollTop = 0; });
-  await page.mouse.move(1000, 780);
+  const mainBounds = await main.boundingBox();
+  assert.ok(mainBounds, 'The main workspace must have a visible window area.');
+  await page.mouse.move(mainBounds.x + mainBounds.width / 2, mainBounds.y + mainBounds.height / 2);
   await page.mouse.wheel(0, 240);
-  await page.waitForTimeout(100);
+  await page.waitForFunction(
+    () => (document.querySelector('main')?.scrollTop || 0) > 0,
+    undefined,
+    { timeout: 3000 },
+  );
   assert.ok(await main.evaluate((element) => element.scrollTop > 0), 'The main workspace must respond to wheel scrolling.');
   await main.evaluate((element) => element.scrollTo(0, 0));
   await mkdir('test-results', { recursive: true });

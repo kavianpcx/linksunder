@@ -21,6 +21,8 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: npx playwright install-deps chromium
         if: runner.os == 'Linux'
+      - run: sudo apt-get update && sudo apt-get install --yes openbox
+        if: runner.os == 'Linux'
       - run: npm run desktop:browser
       - run: npm run build
       - run: npm run lint
@@ -29,7 +31,7 @@ jobs:
         if: runner.os == 'Windows'
         env:
           PLAYWRIGHT_BROWSERS_PATH: build/browsers
-      - run: xvfb-run --auto-servernum npm run test:desktop
+      - run: xvfb-run --auto-servernum bash -c 'openbox --sm-disable & sleep 1; npm run test:desktop'
         if: runner.os == 'Linux'
         env:
           PLAYWRIGHT_BROWSERS_PATH: build/browsers
@@ -40,7 +42,7 @@ jobs:
         if: runner.os == 'Windows'
         env:
           LINKSUNDER_PACKAGED_EXE: release/win-unpacked/LinkSunder.exe
-      - run: xvfb-run --auto-servernum npm run test:desktop
+      - run: xvfb-run --auto-servernum bash -c 'openbox --sm-disable & sleep 1; npm run test:desktop'
         if: runner.os == 'Linux'
         env:
           LINKSUNDER_PACKAGED_EXE: release/linux-unpacked/linksunder
