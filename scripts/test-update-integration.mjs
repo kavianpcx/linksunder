@@ -345,6 +345,7 @@ try {
           XDG_CONFIG_HOME: path.join(testRoot, 'config'),
           XDG_CACHE_HOME: cacheDirectory,
           APPIMAGE: appImagePath,
+          // Let the new AppImage set its APPDIR; inheriting v0.4's extracted tree relaunches stale binaries.
           APPIMAGE_EXTRACT_AND_RUN: '1',
         }),
   };
