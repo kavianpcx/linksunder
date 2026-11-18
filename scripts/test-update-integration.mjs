@@ -408,7 +408,7 @@ try {
     "dialog.showMessageBox = async () => ({ response: 1 });",
     "setTimeout(() => process.getBuiltinModule('node:inspector').close(), 500);",
     "'ready';",
-  ].join('\\n');
+  ].join('\n');
   const configured = await evaluateMain(inspectorUrl, confirmationExpression);
   assert.equal(configured, 'ready', 'The test could not configure the old app confirmation dialog.');
   await delay(600);
