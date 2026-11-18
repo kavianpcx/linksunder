@@ -82,12 +82,14 @@ jobs:
       - name: Verify the release is new or an approved draft and validate artifacts
         run: |
           set -euo pipefail
-          if gh api "repos/$GH_REPO/releases/tags/$TAG" > existing-release.json 2>/dev/null; then
+          release_id=$(gh api "repos/$GH_REPO/releases?per_page=100" --jq --arg tag "$TAG" '[.[] | select(.tag_name == $tag)][0].id // empty')
+          if [[ -n "$release_id" ]]; then
+            gh api "repos/$GH_REPO/releases/$release_id" > existing-release.json
             jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true' existing-release.json >/dev/null || {
               echo "Release $TAG exists and is not a draft; refusing to overwrite a published release."
               exit 1
             }
-            echo "EXISTING_RELEASE_ID=$(jq -r .id existing-release.json)" >> "$GITHUB_ENV"
+            echo "EXISTING_RELEASE_ID=$release_id" >> "$GITHUB_ENV"
             gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null
           else
             if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
@@ -125,7 +127,23 @@ jobs:
           mapfile -d '' assets < <(find packages -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.deb' -o -name '*.AppImage' -o -name 'latest.yml' -o -name 'latest-linux.yml' \) -print0)
           if [[ -n "${EXISTING_RELEASE_ID:-}" ]]; then
             gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$BUILD_SHA" -F force=true >/dev/null
-            gh release upload "$TAG" --repo "$GH_REPO" --clobber "${assets[@]}" SHA256SUMS.txt
+            for file in "${assets[@]}" SHA256SUMS.txt; do
+              name=$(basename "$file")
+              previous_asset=$(gh api "repos/$GH_REPO/releases/$EXISTING_RELEASE_ID/assets?per_page=100" --jq --arg name "$name" '[.[] | select(.name == $name)][0].id // empty')
+              if [[ -n "$previous_asset" ]]; then
+                gh api -X DELETE "repos/$GH_REPO/releases/assets/$previous_asset" >/dev/null
+              fi
+              curl --fail-with-body --silent --show-error -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary "@$file" \
+                "https://uploads.github.com/repos/$GH_REPO/releases/$EXISTING_RELEASE_ID/assets?name=$name" >/dev/null
+            done
+            expected_assets=$(printf '%s\n' "${assets[@]}" SHA256SUMS.txt | xargs -n 1 basename | sort | jq -R . | jq -s .)
+            gh api "repos/$GH_REPO/releases/$EXISTING_RELEASE_ID/assets?per_page=100" > release-assets.json
+            jq -e --argjson expected "$expected_assets" '([.[].name] | sort) == ($expected | sort)' release-assets.json >/dev/null
             jq -n --arg name "LinkSunder $TAG — desktop applications" --arg make_latest "true" --rawfile body notes.md '{draft: false, make_latest: $make_latest, name: $name, body: $body}' > release-update.json
             gh api -X PATCH "repos/$GH_REPO/releases/$EXISTING_RELEASE_ID" --input release-update.json
           else
