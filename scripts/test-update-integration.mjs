@@ -276,7 +276,7 @@ async function connectToUpdatedApp(port) {
     const quitEvents = await readFile(quitLogPath, 'utf8').catch((error) => 'Could not read quit events: ' + error.message);
     const debugEndpoints = await Promise.all(['json/version', 'json/list'].map(async (name) => {
       try {
-        const response = await fetch(`${endpoint}/${name}`, { signal: AbortSignal.timeout(1500) });
+        const response = await fetch(`${endpoint}/${name}`, { signal: globalThis.AbortSignal.timeout(1500) });
         return { name, status: response.status, body: (await response.text()).slice(0, 2000) };
       } catch (error) {
         return { name, error: error.message };
