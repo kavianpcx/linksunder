@@ -13,7 +13,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { URL } from 'node:url';
-import { chromium, _electron as electron } from 'playwright';
+import { chromium } from 'playwright';
 
 const oldVersion = '0.4.0';
 const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
@@ -40,7 +40,8 @@ function withTimeout(label, operation, timeoutMs = 15000) {
 
 const watchdog = setTimeout(() => {
   console.error(`[update-integration] 30 minute safety limit reached during ${currentPhase}.`);
-  try { oldApp?.process().kill(); } catch { /* The app may already have exited. */ }
+  try { oldProcess?.kill(); } catch { /* The app may already have exited. */ }
+  try { void oldBrowser?.close(); } catch { /* The browser connection may already be closed. */ }
   try { updatedPage?.context().browser()?.close(); } catch { /* The browser may already have closed. */ }
   process.exit(1);
 }, 30 * 60 * 1000);
@@ -69,7 +70,8 @@ const packageInfo = await stat(currentAssetPath);
 await stat(manifestPath);
 
 let server;
-let oldApp;
+let oldProcess;
+let oldBrowser;
 let updatedBrowser;
 let updatedPage;
 let appImagePath;
@@ -83,6 +85,71 @@ function runProcess(executable, args, options = {}) {
       if (code === 0) resolve();
       else reject(new Error(`${path.basename(executable)} exited with ${signal || code}.`));
     });
+  });
+}
+
+
+function waitForInspector(child, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(() => reject(new Error('Timed out waiting for app inspector: ' + output)), timeoutMs);
+    const onData = (chunk) => {
+      output = (output + chunk.toString()).slice(-8000);
+      const marker = 'Debugger listening on ';
+      const start = output.indexOf(marker);
+      if (start < 0) return;
+      const url = output.slice(start + marker.length).split(/\s/)[0];
+      if (!url.startsWith('ws://')) return;
+      clearTimeout(timer);
+      child.stderr?.off('data', onData);
+      resolve(url);
+    };
+    child.stderr?.on('data', onData);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      reject(new Error('App exited before inspector startup: ' + (signal || code)));
+    });
+  });
+}
+
+function evaluateMain(inspectorUrl, expression) {
+  return new Promise((resolve, reject) => {
+    const socket = new globalThis.WebSocket(inspectorUrl);
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error('Timed out configuring the isolated update confirmation.'));
+    }, 15000);
+    socket.addEventListener('open', () => {
+      socket.send(JSON.stringify({
+        id: 1,
+        method: 'Runtime.evaluate',
+        params: { expression, returnByValue: true },
+      }));
+    }, { once: true });
+    socket.addEventListener('message', (event) => {
+      let message;
+      try { message = JSON.parse(String(event.data)); }
+      catch (error) {
+        clearTimeout(timer);
+        socket.close();
+        reject(error);
+        return;
+      }
+      if (message.id !== 1) return;
+      clearTimeout(timer);
+      socket.close();
+      if (message.error || message.result?.exceptionDetails)
+        reject(new Error(message.error?.message || message.result.exceptionDetails.text));
+      else resolve(message.result?.result?.value);
+    });
+    socket.addEventListener('error', () => {
+      clearTimeout(timer);
+      reject(new Error('Could not connect to the isolated app inspector.'));
+    }, { once: true });
   });
 }
 
@@ -178,7 +245,7 @@ async function updateState(page) {
 }
 
 async function connectToUpdatedApp(port) {
-  phase('connect to the updated application');
+  phase('connect to the application window');
   const endpoint = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 180000;
   let browser;
@@ -276,13 +343,15 @@ try {
         }),
   };
   phase(`launch isolated v${oldVersion} application`);
-  oldApp = await electron.launch({
-    executablePath: oldExecutable,
-    args: [`--remote-debugging-port=${debugPort}`],
+  oldProcess = spawn(oldExecutable, ['--inspect=0', `--remote-debugging-port=${debugPort}`], {
     env: appEnvironment,
-    timeout: 90000,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
   });
-  const page = await oldApp.firstWindow({ timeout: 90000 });
+  const inspectorUrl = await waitForInspector(oldProcess);
+  const opened = await connectToUpdatedApp(debugPort);
+  oldBrowser = opened.browser;
+  const page = opened.page;
   phase(`verify v${oldVersion} baseline and preserved report`);
   await page.getByRole('heading', { name: 'Build for the unexpected.' }).waitFor({ timeout: 30000 });
   const initialState = await updateState(page);
@@ -329,36 +398,37 @@ try {
   assert.ok(feed.requests.length >= 2, 'Cancel and retry should issue separate package requests.');
   assert.equal(feed.requests[1].rangeStart, 0, 'A cancelled partial package must be discarded; retry must start at byte zero.');
 
-  await oldApp.evaluate(({ app }) => {
-    const fs = process.getBuiltinModule('node:fs');
-    const record = (event) => fs.appendFileSync(process.env.LINKSUNDER_UPDATE_TEST_QUIT_LOG, `${event}\\n`);
-    app.on('before-quit', () => record('before-quit'));
-    app.on('will-quit', () => record('will-quit'));
-    for (const method of ['quit', 'exit']) {
-      const original = app[method].bind(app);
-      app[method] = (...args) => {
-        record(`${method}(${args.join(',')})`);
-        return original(...args);
-      };
-    }
-  });
-  await oldApp.evaluate(({ dialog }) => {
-    dialog.showMessageBox = async () => ({ response: 1 });
-  });
-  // Playwright's Electron launcher keeps a Node inspector session attached to the main process.
-  // Detach it shortly before quit so the debugger cannot hold the updater's exit open.
-  await oldApp.evaluate(() => {
-    setTimeout(() => process.getBuiltinModule('node:inspector').close(), 500);
-  });
+  const confirmationExpression = [
+    "const { app, dialog } = require('electron');",
+    "const fs = process.getBuiltinModule('node:fs');",
+    "const record = (event) => fs.appendFileSync(process.env.LINKSUNDER_UPDATE_TEST_QUIT_LOG, event + String.fromCharCode(10));",
+    "app.on('before-quit', () => record('before-quit'));",
+    "app.on('will-quit', () => record('will-quit'));",
+    "for (const method of ['quit', 'exit']) { const original = app[method].bind(app); app[method] = (...args) => { record(method + '(' + args.join(',') + ')'); return original(...args); } }",
+    "dialog.showMessageBox = async () => ({ response: 1 });",
+    "setTimeout(() => process.getBuiltinModule('node:inspector').close(), 500);",
+    "'ready';",
+  ].join('\\n');
+  const configured = await evaluateMain(inspectorUrl, confirmationExpression);
+  assert.equal(configured, 'ready', 'The test could not configure the old app confirmation dialog.');
+  await delay(600);
   phase('install the verified update and wait for v0.4.0 to close');
-  const oldAppClosed = oldApp.waitForEvent('close', { timeout: 30000 });
+  const oldAppClosed = oldProcess.exitCode !== null || oldProcess.signalCode !== null
+    ? Promise.resolve({ code: oldProcess.exitCode, signal: oldProcess.signalCode })
+    : withTimeout('old app process exit', new Promise((resolve) => {
+      oldProcess.once('exit', (code, signal) => resolve({ code, signal }));
+    }), 30000);
   await page.getByRole('button', { name: 'Restart & Install', exact: true }).click();
+  let oldExit;
   try {
-    await oldAppClosed;
+    oldExit = await oldAppClosed;
   } catch (error) {
-    const events = await readFile(quitLogPath, 'utf8').catch((readError) => `Could not read quit events: ${readError.message}`);
-    assert.fail(`The verified update did not close the previous app. Quit events: ${events || '(none)'}; ${error.message}`);
+    const events = await readFile(quitLogPath, 'utf8').catch((readError) => 'Could not read quit events: ' + readError.message);
+    assert.fail('The verified update did not close the previous app. Quit events: ' + (events || '(none)') + '; ' + error.message);
   }
+  assert.equal(oldExit.code, 0, 'The previous app exited abnormally: ' + JSON.stringify(oldExit));
+  await oldBrowser?.close().catch(() => {});
+  oldBrowser = undefined;
   const updated = await connectToUpdatedApp(debugPort);
   updatedBrowser = updated.browser;
   updatedPage = updated.page;
@@ -378,11 +448,8 @@ try {
 } finally {
   phase('bounded isolated test cleanup');
   await withTimeout('close the updated application', stopUpdatedApp(), 15000).catch((error) => console.warn(error.message));
-  const oldProcess = oldApp?.process();
-  if (oldProcess && oldProcess.exitCode === null && oldProcess.signalCode === null) {
-    await withTimeout('close the previous application', oldApp.close(), 10000).catch(() => {});
-    if (oldProcess.exitCode === null && oldProcess.signalCode === null) oldProcess.kill();
-  }
+  if (oldBrowser) await withTimeout('disconnect the previous app window', oldBrowser.close(), 10000).catch(() => {});
+  if (oldProcess && oldProcess.exitCode === null && oldProcess.signalCode === null) oldProcess.kill();
   if (windowsUninstaller) await runProcess(windowsUninstaller, ['/S'], { timeout: 60000 }).catch(() => {});
   if (server?.listening) {
     server.closeAllConnections();
