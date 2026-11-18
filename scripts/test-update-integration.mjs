@@ -290,6 +290,7 @@ try {
   await updatedPage.getByRole('heading', { name: 'Build for the unexpected.' }).waitFor({ timeout: 60000 });
   const finalState = await waitUntil('the installed version to change', () => updateState(updatedPage), (state) => state.currentVersion === currentVersion, 60000);
   assert.equal(finalState.currentVersion, currentVersion);
+  assert.equal(finalState.supported, true, 'The installed package must remain eligible for its next in-app update.');
   assert.equal(new URL(updatedPage.url()).origin, originBeforeUpdate, 'The isolated engine should retain its saved local port and browser preferences.');
   await waitUntil('the light appearance preference to survive the update', () => updatedPage.evaluate(() => document.documentElement.dataset.theme), (theme) => theme === 'light', 30000);
   const persistedReport = await updatedPage.evaluate(async (id) => {
