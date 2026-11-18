@@ -6,9 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scenarioSchema, demoScenario, type Run } from '../shared/schema.js';
+import { apiTestSchema } from '../shared/api-test.js';
 import { networkInspectionSchema, type NetworkReport } from '../shared/network.js';
 import type { HistoryQuery } from '../shared/history.js';
 import { execute, newRun } from './runner.js';
+import { createApiTestRun, executeApiTest } from './api-test.js';
 import { validateTarget } from './security.js';
 import { inspectNetworkTarget, normalizeNetworkTarget } from './network-inspector.js';
 import { htmlNetworkReport, htmlReport } from './report.js';
@@ -62,7 +64,9 @@ let active: AbortController | undefined;
 let activeTask: Promise<void> | undefined;
 let activeNetwork: AbortController | undefined;
 let activeNetworkTask: Promise<void> | undefined;
-let activeReservation: 'run' | 'network' | 'storage' | undefined;
+let activeApiTest: AbortController | undefined;
+let activeApiTask: Promise<void> | undefined;
+let activeReservation: 'run' | 'network' | 'api' | 'storage' | undefined;
 let indexingController = new AbortController();
 let indexingTask: Promise<void> | undefined;
 let deletionRecoveryError: string | undefined;
@@ -77,7 +81,7 @@ interface StorageMigrationJob extends ReportCopyProgress {
 let storageMigration: StorageMigrationJob | undefined;
 let storageMigrationController: AbortController | undefined;
 let storageMigrationTask: Promise<void> | undefined;
-const executionBusy = () => Boolean(active || activeNetwork || activeReservation);
+const executionBusy = () => Boolean(active || activeNetwork || activeApiTest || activeReservation);
 app.addHook('onRequest', async (req, reply) => {
   if (req.headers.host !== new URL(origin).host)
     return reply.code(403).send({ error: 'Invalid host.' });
@@ -92,12 +96,27 @@ app.addHook('onRequest', async (req, reply) => {
   }
 });
 async function persist(run: Run) {
-  await persistReport(data, run, htmlReport(run), 'run');
-  historyIndex.upsertRun(run, data);
+  const stored = structuredClone(run);
+  if (stored.apiTest) {
+    delete stored.apiTest.baseline?.preview;
+    delete stored.apiTest.disrupted?.preview;
+    delete stored.apiTest.recovery?.preview;
+  }
+  await persistReport(data, stored, htmlReport(stored), 'run');
+  historyIndex.upsertRun(stored, data);
 }
 async function persistNetwork(report: NetworkReport) {
   await persistReport(data, report, htmlNetworkReport(report), 'network');
   historyIndex.upsertNetwork(report, data);
+}
+function safeRunDownload(run: Run): Run {
+  const safe = structuredClone(run);
+  if (safe.apiTest) {
+    delete safe.apiTest.baseline?.preview;
+    delete safe.apiTest.disrupted?.preview;
+    delete safe.apiTest.recovery?.preview;
+  }
+  return safe;
 }
 async function readStoredReport(kind: 'run' | 'network', id: string): Promise<Run | NetworkReport | undefined> {
   if (!isValidReportId(id)) return undefined;
@@ -239,12 +258,53 @@ async function start(raw: unknown) {
     throw error;
   }
 }
+async function startApiTest(raw: unknown) {
+  if (executionBusy()) throw Object.assign(new Error('Another run is active. Cancel it or wait.'), { statusCode: 409 });
+  const parsed = apiTestSchema.safeParse(raw);
+  if (!parsed.success)
+    throw Object.assign(new Error('Invalid API test: ' + parsed.error.issues.map((issue) => `${issue.path.join('.')} ${issue.message}`).join('; ')), { statusCode: 400 });
+  activeReservation = 'api';
+  try {
+    await validateTarget(parsed.data.url, parsed.data.externalConsent);
+    const run = createApiTestRun(parsed.data);
+    runs.set(run.id, run);
+    historyIndex.upsertRun(run, data);
+    try {
+      await persist(run);
+    } catch {
+      runs.delete(run.id);
+      historyIndex.deleteRecord('run', run.id);
+      throw Object.assign(new Error('The API test could not start because the report folder is not writable.'), { statusCode: 500 });
+    }
+    const controller = new AbortController();
+    activeApiTest = controller;
+    activeApiTask = executeApiTest(parsed.data, run, controller.signal)
+      .then(() => persist(run))
+      .catch(async () => {
+        run.status = controller.signal.aborted ? 'cancelled' : 'error';
+        run.error = controller.signal.aborted ? 'API test cancelled.' : 'The API report could not be saved. Check available storage and permissions.';
+        await persist(run).catch(() => undefined);
+      })
+      .finally(() => {
+        activeApiTest = undefined;
+        activeApiTask = undefined;
+        activeReservation = undefined;
+        const cleanup = setTimeout(() => runs.delete(run.id), 120000);
+        cleanup.unref();
+      });
+    return safeRunDownload(run);
+  } catch (error) {
+    if (!activeApiTest) activeReservation = undefined;
+    throw error;
+  }
+}
 app.get('/api/info', async () => ({ reportDirectory: data, ...historyIndex.getSummary(), deletionRecoveryError, storageMigration }));
 app.get('/api/summary', async () => ({ ...historyIndex.getSummary(), deletionRecoveryError }));
 app.get('/api/operations', async () => {
   const activeLabels = [
     active || activeReservation === 'run' ? 'a resilience test' : undefined,
     activeNetwork || activeReservation === 'network' ? 'a network inspection' : undefined,
+    activeApiTest || activeReservation === 'api' ? 'an API test' : undefined,
     activeReservation === 'storage' ? 'a report folder change' : undefined,
     deleteWorkerTask || historyIndex.incompleteDeleteJobs().length ? 'report cleanup' : undefined,
   ].filter(Boolean);
@@ -292,7 +352,7 @@ app.get('/api/history', async (req, reply) => {
     return reply.code(400).send({ error: 'Choose a valid page and a page size of 10, 20 or 50.' });
   if (raw.kind !== undefined && !kind)
     return reply.code(400).send({ error: 'Choose resilience or network reports.' });
-  if (status && !['running', 'pass', 'fail', 'observed', 'error', 'cancelled', 'complete'].includes(status))
+  if (status && !['running', 'pass', 'fail', 'observed', 'error', 'cancelled', 'not-tested', 'fault-not-triggered', 'complete'].includes(status))
     return reply.code(400).send({ error: 'Choose a valid report status.' });
   if (query.length > 200 || !validDate(from) || !validDate(to) || !sort || (from && to && from > to))
     return reply.code(400).send({ error: 'Check the search, date range and sort settings.' });
@@ -526,8 +586,20 @@ app.post('/api/runs', async (req, reply) => {
       .send({ error: (e as Error).message });
   }
 });
+app.post('/api/api-tests', async (req, reply) => {
+  try {
+    return await startApiTest(req.body);
+  } catch (error) {
+    return reply.code((error as { statusCode?: number }).statusCode || 400).send({ error: (error as Error).message });
+  }
+});
+app.post('/api/api-tests/cancel', async () => {
+  activeApiTest?.abort();
+  return { ok: true };
+});
 app.post('/api/cancel', async () => {
   active?.abort();
+  activeApiTest?.abort();
   return { ok: true };
 });
 app.post('/api/demo', async (_req, reply) => {
@@ -538,7 +610,9 @@ app.post('/api/demo', async (_req, reply) => {
 app.get<{ Params: { id: string; format: string } }>(
   '/api/reports/:id/:format',
   async (req, reply) => {
-    const run = runs.get(req.params.id) || await readStoredReport('run', req.params.id) as Run | undefined;
+    const live = runs.get(req.params.id);
+    const stored = live ? safeRunDownload(live) : await readStoredReport('run', req.params.id) as Run | undefined;
+    const run = stored;
     if (!run) return reply.code(404).send({ error: 'Run not found.' });
     if (!['json', 'html'].includes(req.params.format))
       return reply.code(400).send({ error: 'Choose json or html.' });
@@ -584,7 +658,7 @@ app.addHook('onClose', async () => {
   storageMigrationController?.abort();
   indexingController.abort();
   deleteWorkerController.abort();
-  await Promise.all([activeTask, activeNetworkTask, storageMigrationTask, indexingTask, deleteWorkerTask]);
+  await Promise.all([activeTask, activeNetworkTask, activeApiTask, storageMigrationTask, indexingTask, deleteWorkerTask]);
   historyIndex.close();
 });
 for (const sig of ['SIGINT', 'SIGTERM'] as const)

@@ -8,7 +8,7 @@ your UI preserves the state that matters. No account, cloud service, or AI API.
 
 ### Download the application
 
-**[⬇ Download for Windows — EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Windows-x64.exe)** · **[⬇ Download for Linux — DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Linux-amd64.deb)**
+**[⬇ Download for Windows — EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.0/LinkSunder-0.5.0-Windows-x64.exe)** · **[⬇ Download for Linux — DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.0/LinkSunder-0.5.0-Linux-amd64.deb)**
 
 **Download → Install → Open LinkSunder.** No terminal commands or developer tools required.
 On Windows, open the downloaded EXE, finish installation, then open LinkSunder from Start or the desktop shortcut.
@@ -27,10 +27,10 @@ There is no trial mode, demo-only edition, account or paid feature gate.
 
 | Platform                             | File                                                                                                                         | What to do                                                                                                            |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Windows 11, x64                      | [Download EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Windows-x64.exe)  | Open the installer, finish installation, then open LinkSunder from Start or the desktop shortcut.                     |
-| Windows, x64 portable                | [Download ZIP](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Windows-x64.zip)            | Extract the entire folder and open `LinkSunder.exe`. Keep its resources beside it.                                    |
-| Ubuntu / Debian desktop, x64         | [Download DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Linux-amd64.deb)  | Open it in the system software installer, install, then launch LinkSunder from Applications.                          |
-| Other compatible Linux desktops, x64 | [Download AppImage](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Linux-x86_64.AppImage) | Allow execution in file Properties, then double-click. System library/FUSE compatibility depends on the distribution. |
+| Windows 11, x64                      | [Download EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.0/LinkSunder-0.5.0-Windows-x64.exe)  | Open the installer, finish installation, then open LinkSunder from Start or the desktop shortcut.                     |
+| Windows, x64 portable                | [Download ZIP](https://github.com/kavianpcx/linksunder/releases/download/v0.5.0/LinkSunder-0.5.0-Windows-x64.zip)            | Extract the entire folder and open `LinkSunder.exe`. Keep its resources beside it.                                    |
+| Ubuntu / Debian desktop, x64         | [Download DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.0/LinkSunder-0.5.0-Linux-amd64.deb)  | Open it in the system software installer, install, then launch LinkSunder from Applications.                          |
+| Other compatible Linux desktops, x64 | [Download AppImage](https://github.com/kavianpcx/linksunder/releases/download/v0.5.0/LinkSunder-0.5.0-Linux-x86_64.AppImage) | Allow execution in file Properties, then double-click. System library/FUSE compatibility depends on the distribution. |
 
 The desktop packages include the application runtime and test Chromium. They start
 their engine automatically on loopback and stop it when the window closes. The
@@ -99,10 +99,11 @@ The demo uses no external service. Its two results are saved to your real histor
 - Ordered no-code steps: open, click, fill, offline, online, fail/delay API, check
   element/value, and screenshot. Add, edit, remove, or reorder; import/export JSON.
 - Chromium network emulation and controlled HTTP 503 responses.
+- Resilience evidence for baseline requests, real fault triggers, assertions, and recovery. A run cannot pass just because a page opened; Quick Scan without a configured flow reports **NOT TESTED**.
+- A focused API Test Builder for safe HTTP methods, headers, bodies, expected status/time/headers, JSON checks and schema checks, bounded retries, same-origin redirects, and local fault simulations. Data-changing methods require explicit confirmation and are never replayed automatically.
 - Opt-in masked screenshots, cancellation, bounded timeouts, and isolated contexts.
 - Self-contained offline HTML reports and JSON exports, persisted locally.
-- A single-host Network Inspector for DNS records, bounded TCP reachability checks,
-  HTTP response headers, TLS certificate basics, and practical findings.
+- A single-host Network Inspector for A/AAAA/CNAME/NS/MX/TXT/SOA DNS records with per-query status and timing, separate OS address resolution, bounded TCP checks, HEAD with a one-byte GET fallback when HEAD is rejected, TLS certificate basics, and practical findings.
 - Searchable combined history for resilience and network reports, with confirmed
   single, bulk, or clear-all deletion, including progress for large cleanups.
 - Server-side search and 10/20/50-row pagination backed by a local SQLite metadata
@@ -114,8 +115,7 @@ The demo uses no external service. Its two results are saved to your real histor
   no IP address is sent to a geolocation service.
 - User-triggered updates for Windows NSIS installers and Linux AppImage packages.
   Windows portable ZIP and Linux DEB users update manually through their usual installer.
-- No assertion means **OBSERVED**, never PASS. Failed assertions produce FAIL;
-  setup/action errors produce ERROR, and stopped runs produce CANCELLED.
+- Results distinguish **PASS**, **FAIL**, **ERROR**, **CANCELLED**, **OBSERVED**, **NOT TESTED**, and **FAULT NOT TRIGGERED**. An observation or a missing fault trigger never counts as PASS.
 
 ## Network Inspector
 
@@ -124,15 +124,18 @@ The app requires an authorization confirmation before a check begins. It handles
 host at a time, allows up to 20 unique TCP ports, checks at most four ports in parallel,
 and limits each connection timeout to three seconds.
 
-- DNS: A, AAAA, CNAME, NS and MX records, plus reverse lookups for up to three
-  resolved addresses.
+- DNS: A, AAAA, CNAME, NS, MX, TXT and SOA queries through the configured resolver,
+  each with a result classification, duration and bounded retry. Operating-system
+  resolved addresses are shown separately from DNS record answers. No authoritative
+  server trace is claimed; apex domains commonly lack CNAME records and subdomains may
+  not publish NS records directly.
 - TCP: **OPEN** means the connection was accepted; **CLOSED** means it was refused;
   **UNKNOWN** means the host did not respond or could not be reached; **ERROR** means
   the operating system could not complete the check.
-- HTTP and HTTPS: short `HEAD` requests only, up to five redirects followed only while
-  the hostname stays the same, status and selected response metadata, security-header
-  presence, and cookie security flags. Redirects to another hostname are reported but
-  are not followed.
+- HTTP and HTTPS: `HEAD` first, with a one-byte range `GET` only if the server rejects
+  `HEAD`; up to five redirects on the same hostname, status and selected response
+  metadata, security-header presence, and cookie security flags. Redirects to another
+  hostname are reported but are not followed.
 - TLS: a basic certificate summary on selected port 443 or 8443, including trust,
   hostname mismatch, validity dates, expiry, protocol and fingerprint when available.
 - Findings use Info, Low, Medium and High labels to explain observations and possible
@@ -191,7 +194,8 @@ states its hardware and limits; the benchmark never uses the user's report direc
 The **Software updates** section in Settings checks only after the user selects **Check
 for Updates**. It shows release notes, download size, real transfer progress, and a
 cancel/retry option; downloads and installation are never silent. Pause/resume is not
-offered. A downloaded update is checked against the SHA-512 value in the official
+offered by the current updater. Cancellation or interruption discards the partial file,
+and retry starts a fresh download. A downloaded update is checked against the SHA-512 value in the official
 [GitHub release metadata](https://github.com/kavianpcx/linksunder/releases), and
 installation requires confirmation after active tests, migrations, and cleanup stop.
 User reports and settings remain outside the installation directory.
@@ -210,11 +214,28 @@ applies network rules, executes ordered steps, and evaluates explicit assertions
 Step status is polled by the dashboard; no synthetic progress percentages are used.
 Runs are persisted in `data/` as JSON and standalone HTML with embedded PNGs.
 
-API fault rules apply to subsequent requests whose pathname contains the configured
-path. Delays affect selected HTTP requests, **not** mobile bandwidth, packet loss,
-or a complete carrier network. Add a Click/Open step after installing an API rule
-to trigger a request. A Quick Scan only changes network state and records observations;
-it does not infer whether an application is healthy.
+API fault rules apply to an exact normalized pathname after a browser action. A resilience
+PASS requires a successful baseline request, a real matching faulted request, an assertion
+during disruption, a recovery request, and a recovery assertion. If the request never
+matches, the report says **FAULT NOT TRIGGERED**. Delays affect selected HTTP requests,
+not mobile bandwidth, packet loss, or an entire carrier network. A Quick Scan without
+configured actions reports **NOT TESTED** and does not alter connectivity.
+
+### API Test Builder
+
+Open **API Test Builder** from the sidebar to send a bounded request. GET is the default.
+The builder records baseline, simulated-fault and recovery measurements for safe methods.
+It supports query parameters, headers, optional bodies, timeouts, redirect choices,
+expected status/time/headers, JSON property checks, a practical JSON Schema subset, and
+up to two explicitly configured retries. POST, PUT, PATCH and DELETE require confirmation;
+the builder sends them once and disables retries and repeat-request fault simulations.
+HTTP 503 simulation changes the response only at LinkSunder's local client boundary; it
+does not make the API server return 503. Request headers, request bodies, cookies and raw
+response bodies are not saved. Temporary JSON previews mask common credential and
+personal-data fields; plain-text body previews are hidden. The API client does not expose
+the negotiated HTTP version, so the report marks it unavailable.
+
+![API Test Builder](docs/screenshots/api-test-builder.png)
 
 ## Architecture
 

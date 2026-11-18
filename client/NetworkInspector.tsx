@@ -25,6 +25,27 @@ const TIMEOUT_OPTIONS = [
   { value: '2000', label: '2 seconds' },
   { value: '3000', label: '3 seconds · slower networks' },
 ];
+const DNS_TIMEOUT_OPTIONS = [
+  { value: '1000', label: '1 second' },
+  { value: '2500', label: '2.5 seconds · default' },
+  { value: '5000', label: '5 seconds' },
+  { value: '10000', label: '10 seconds' },
+];
+const DNS_RETRY_OPTIONS = [
+  { value: '0', label: 'No retry' },
+  { value: '1', label: '1 retry · default' },
+  { value: '2', label: '2 retries' },
+];
+const dnsStatusLabel: Record<string, string> = {
+  found: 'Record found',
+  'no-record': 'No record published',
+  NXDOMAIN: 'NXDOMAIN',
+  timeout: 'Timed out',
+  'resolver-failure': 'Resolver failure',
+  unsupported: 'Unsupported',
+  'not-applicable': 'Not applicable',
+  cancelled: 'Cancelled',
+};
 
 interface NetworkInspectorProps {
   initialReport?: NetworkReport;
@@ -65,7 +86,7 @@ function renderHttpCheck(check: HttpCheck) {
         <h3>{check.scheme.toUpperCase()}</h3>
         <span className={`badge ${badge.className}`} title={check.error}>{badge.label}</span>
       </div>
-      <p className="mono-line">{check.finalUrl || 'No final URL recorded'} · {check.responseTimeMs ?? '—'} ms</p>
+      <p className="mono-line">{check.method || 'HEAD'} · HTTP {check.httpVersion || 'version unavailable'} · {check.finalUrl || 'No final URL recorded'} · {check.responseTimeMs ?? '—'} ms</p>
       {check.error && <p className="inline-warning">{check.error}</p>}
       <dl className="detail-grid">
         <dt>Content type</dt><dd>{check.contentType || 'Not reported'}</dd>
@@ -92,6 +113,8 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
   const [preset, setPreset] = useState('common');
   const [customPorts, setCustomPorts] = useState('80, 443');
   const [timeout, setTimeout] = useState(1200);
+  const [dnsTimeout, setDnsTimeout] = useState(2500);
+  const [dnsRetries, setDnsRetries] = useState(1);
   const [authorized, setAuthorized] = useState(false);
   const [current, setCurrent] = useState<NetworkReport | undefined>(initialReport);
   const [busy, setBusy] = useState(false);
@@ -154,6 +177,8 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
         target,
         ports: selectedPorts(),
         timeout,
+        dnsTimeout,
+        dnsRetries,
         authorized,
       });
       setCurrent(report);
@@ -180,7 +205,7 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
   }
 
   const openPorts = current?.ports.filter((port) => port.status === 'OPEN') ?? [];
-  const addresses = current ? [...current.dns.A, ...current.dns.AAAA] : [];
+  const addresses = current?.dns.resolvedAddresses?.map((item) => item.address) ?? [];
   const completed = Boolean(current && current.status !== 'running');
   const targetValid = validNetworkTarget(target);
   const operationActive = busy || current?.status === 'running';
@@ -223,6 +248,14 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
           <SelectField label="Connection timeout" value={String(timeout)} options={TIMEOUT_OPTIONS} onChange={(value) => setTimeout(Number(value))} disabled={operationActive} />
         </div>
         {preset === 'custom' && <label>Custom TCP ports (comma separated)<input aria-label="Custom TCP ports" inputMode="numeric" value={customPorts} disabled={operationActive} onChange={(event) => setCustomPorts(event.target.value)} placeholder="80, 443, 8080" /><span className="hint">Enter up to 20 unique ports from 1 to 65535.</span></label>}
+        <details className="dns-settings">
+          <summary>DNS lookup settings</summary>
+          <div className="columns">
+            <SelectField label="DNS timeout per query" value={String(dnsTimeout)} options={DNS_TIMEOUT_OPTIONS} onChange={(value) => setDnsTimeout(Number(value))} disabled={operationActive} />
+            <SelectField label="Bounded DNS retries" value={String(dnsRetries)} options={DNS_RETRY_OPTIONS} onChange={(value) => setDnsRetries(Number(value))} disabled={operationActive} />
+          </div>
+          <p className="hint">Each record type has its own timeout and bounded retry count. DNS answers use the configured system resolver.</p>
+        </details>
         <label className="checkbox authorization-check">
           <input type="checkbox" checked={authorized} disabled={operationActive} aria-describedby="network-authorization-help" onChange={(event) => setAuthorized(event.target.checked)} />
           I own this server or have permission to test it.
@@ -253,14 +286,20 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
             </div>
           </div>
           <div className="inspector-stats">
-            <article><span>Resolved addresses</span><strong>{addresses.length || '—'}</strong><small>{addresses.slice(0, 2).join(', ') || current.dns.note || 'No IP addresses reported'}</small></article>
+            <article><span>{current.dns.inputAddress ? 'Target IP address' : 'System-resolved addresses'}</span><strong>{current.dns.inputAddress || addresses.length || '—'}</strong><small>{current.dns.inputAddress ? 'Entered directly; no hostname lookup was needed.' : addresses.slice(0, 2).join(', ') || (current.dns.systemResolution ? dnsStatusLabel[current.dns.systemResolution.status] : current.dns.note) || 'No IP addresses reported'}</small></article>
             <article><span>TCP ports open</span><strong>{openPorts.length}</strong><small>{openPorts.map((port) => port.port).join(', ') || 'None of the selected ports accepted a connection'}</small></article>
-            <article><span>HTTP / HTTPS</span><strong>{current.http.map((check) => check.status ? `${check.scheme.toUpperCase()} ${check.status}` : `${check.scheme.toUpperCase()} —`).join(' · ') || 'Not available'}</strong><small>HEAD response only</small></article>
+            <article><span>HTTP / HTTPS</span><strong>{current.http.map((check) => check.status ? `${check.scheme.toUpperCase()} ${check.status}` : `${check.scheme.toUpperCase()} —`).join(' · ') || 'Not available'}</strong><small>HEAD first · safe range GET only when HEAD is rejected</small></article>
             <article><span>TLS expiry</span><strong>{current.tls?.daysUntilExpiry !== undefined ? `${current.tls.daysUntilExpiry} days` : current.tls?.error || 'Not checked'}</strong><small>{current.tls?.protocol || 'Certificate summary only'}</small></article>
           </div>
           <section className="panel findings-panel"><div className="panel-head"><h2>Findings &amp; recommendations</h2><span>{current.findings.length} observations</span></div><div className="finding-list">{current.findings.map((finding, index) => <article className="finding" key={`${finding.title}-${index}`}><span className={`severity severity-${finding.severity.toLowerCase()}`}>{finding.severity}</span><div><strong>{finding.title}</strong><p>{finding.detail}</p></div></article>)}</div></section>
-          <section className="panel form report-section"><h2>DNS summary</h2><p className="hint">System resolver · {current.dns.lookupTimeMs} ms</p><div className="record-grid">
-            <div><span>A records</span><strong>{current.dns.A.join(', ') || '—'}</strong></div><div><span>AAAA records</span><strong>{current.dns.AAAA.join(', ') || '—'}</strong></div><div><span>CNAME</span><strong>{current.dns.CNAME.join(', ') || '—'}</strong></div><div><span>Name servers</span><strong>{current.dns.NS.join(', ') || '—'}</strong></div><div><span>Mail servers</span><strong>{current.dns.MX.map((record) => `${record.exchange} (${record.priority})`).join(', ') || '—'}</strong></div><div><span>Reverse lookup</span><strong>{current.dns.reverse.map((record) => `${record.address}: ${record.names.join(', ')}`).join('; ') || '—'}</strong></div>
+          <section className="panel form report-section"><h2>DNS summary</h2><p className="hint">DNS record queries through the configured resolver · {current.dns.lookupTimeMs} ms total · system address resolution is listed separately.</p><div className="record-grid">
+            {(['A', 'AAAA', 'CNAME', 'NS', 'MX', 'TXT', 'SOA'] as const).map((kind) => {
+              const value = kind === 'MX' ? current.dns.MX.map((record) => `${record.exchange} (${record.priority})`).join(', ') : kind === 'TXT' ? current.dns.TXT?.join(' · ') || '' : kind === 'SOA' ? current.dns.SOA ? `${current.dns.SOA.nsname} · serial ${current.dns.SOA.serial}` : '' : current.dns[kind].join(', ');
+              const result = current.dns.records?.[kind];
+              return <div key={kind}><span>{kind} records</span><strong>{value || dnsStatusLabel[result?.status || 'not-applicable'] || 'Not reported'}</strong><small>{result ? `${dnsStatusLabel[result.status]} · ${result.durationMs} ms · ${result.attempts} attempt(s)${result.error ? ` · ${result.error}` : ''}` : 'No record-status details in this report.'}</small></div>;
+            })}
+            <div><span>{current.dns.inputAddress ? 'Target IP address' : 'System-resolved addresses'}</span><strong>{current.dns.inputAddress || addresses.join(', ') || '—'}</strong><small>{current.dns.inputAddress ? 'Entered directly; no hostname lookup was needed.' : current.dns.systemResolution ? `${dnsStatusLabel[current.dns.systemResolution.status]} · ${current.dns.systemResolution.durationMs} ms${current.dns.systemResolution.error ? ` · ${current.dns.systemResolution.error}` : ''}` : 'No separate operating-system lookup in this historical report.'}</small></div>
+            <div><span>Reverse DNS</span><strong>{current.dns.reverse.map((record) => `${record.address}: ${record.names.join(', ')}`).join('; ') || '—'}</strong><small>{current.dns.reverseDiagnostics?.map((item) => `${item.address}: ${dnsStatusLabel[item.result.status]}`).join(' · ') || 'No reverse lookup details in this report.'}</small></div>
           </div>{current.dns.note && <p className="hint">{current.dns.note}</p>}</section>
           <section className="panel form report-section"><h2>Approximate IP location</h2>
             <p className="hint">Uses only the local database files selected in Settings. IPs are not sent to a geolocation service. Results can differ for CDNs, anycast, proxies, VPNs, and shared networks.</p>

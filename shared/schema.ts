@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ApiTestEvidence } from './api-test.js';
 export const actions = [
   'open',
   'click',
@@ -31,7 +32,15 @@ export const scenarioSchema = z.object({
 });
 export type Scenario = z.infer<typeof scenarioSchema>;
 export type Step = z.infer<typeof stepSchema>;
-export type Status = 'running' | 'pass' | 'fail' | 'observed' | 'error' | 'cancelled';
+export type Status =
+  | 'running'
+  | 'pass'
+  | 'fail'
+  | 'error'
+  | 'cancelled'
+  | 'observed'
+  | 'not-tested'
+  | 'fault-not-triggered';
 export interface StepResult {
   action: string;
   status: 'running' | 'pass' | 'fail';
@@ -53,6 +62,17 @@ export interface Run {
   advice?: string;
   screenshots: string[];
   network: { failed: number; injected: number };
+  resilience?: {
+    faultConfigured: boolean;
+    fault: 'offline' | 'failure' | 'slow' | 'none';
+    baselineRequests: number;
+    triggeredRequests: number;
+    recoveryRequests: number;
+    disruptionAssertions: number;
+    recoveryAssertions: number;
+    observedDelayMs?: number;
+  };
+  apiTest?: ApiTestEvidence;
 }
 export function demoScenario(base: string, mode: 'broken' | 'fixed'): Scenario {
   return scenarioSchema.parse({
@@ -60,13 +80,18 @@ export function demoScenario(base: string, mode: 'broken' | 'fixed'): Scenario {
     url: `${base}/demo/${mode}`,
     screenshots: true,
     steps: [
+      { action: 'fill', selector: '#note', value: 'Baseline note.' },
+      { action: 'click', selector: '#send' },
+      { action: 'check', selector: '#status[data-state="success"]' },
       { action: 'fill', selector: '#note', value: 'Keep my draft safe.' },
       { action: 'offline' },
       { action: 'click', selector: '#send' },
       { action: 'check', selector: '#status[data-state="error"]' },
       { action: 'value', selector: '#note', value: 'Keep my draft safe.' },
       { action: 'online' },
-      { action: 'value', selector: '#note', value: 'Keep my draft safe.' },
+      { action: 'click', selector: '#send' },
+      { action: 'check', selector: '#status[data-state="success"]' },
+      { action: 'value', selector: '#note', value: '' },
       { action: 'screenshot' },
     ],
   });

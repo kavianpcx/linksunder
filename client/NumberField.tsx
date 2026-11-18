@@ -10,9 +10,10 @@ interface NumberFieldProps {
   step?: number;
   onChange: (value: number) => void;
   className?: string;
+  disabled?: boolean;
 }
 
-export function NumberField({ id, label, value, min, max, step = 1, onChange, className = '' }: NumberFieldProps) {
+export function NumberField({ id, label, value, min, max, step = 1, onChange, className = '', disabled = false }: NumberFieldProps) {
   const generatedId = useId();
   const inputId = id || `number-${generatedId}`;
   const decreaseDisabled = min !== undefined && value <= min;
@@ -29,6 +30,7 @@ export function NumberField({ id, label, value, min, max, step = 1, onChange, cl
           min={min}
           max={max}
           step={step}
+          disabled={disabled}
           onChange={(event) => onChange(Number(event.target.value))}
         />
         <div className="number-stepper">
@@ -36,13 +38,13 @@ export function NumberField({ id, label, value, min, max, step = 1, onChange, cl
             type="button"
             aria-label={`Increase ${label}`}
             onClick={() => onChange(Math.min(max ?? Number.MAX_SAFE_INTEGER, value + step))}
-            disabled={increaseDisabled}
+            disabled={disabled || increaseDisabled}
           ><ChevronUp size={13} aria-hidden="true" /></button>
           <button
             type="button"
             aria-label={`Decrease ${label}`}
             onClick={() => onChange(Math.max(min ?? Number.MIN_SAFE_INTEGER, value - step))}
-            disabled={decreaseDisabled}
+            disabled={disabled || decreaseDisabled}
           ><ChevronDown size={13} aria-hidden="true" /></button>
         </div>
       </div>

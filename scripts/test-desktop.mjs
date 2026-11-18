@@ -76,11 +76,13 @@ try {
   await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
   await page.getByRole('button', { name: 'Run Test', exact: true }).click();
   await page.getByRole('link', { name: 'Download JSON Report' }).waitFor({ timeout: 30000 });
-  assert.equal(await page.locator('.heading .badge').textContent(), 'pass');
+  assert.equal(await page.locator('.heading .badge').textContent(), 'NOT TESTED');
   const origin = new URL(page.url()).origin;
   const runs = await page.evaluate(async () => (await fetch('/api/runs')).json());
   assert.equal(runs.length, 1);
   assert.ok(runs[0].duration > 0);
+  assert.equal(runs[0].assertions, 1);
+  assert.equal(runs[0].passed, 1);
   const closed = page.waitForEvent('close');
   await page.getByRole('button', { name: 'Close window' }).click();
   await closed;

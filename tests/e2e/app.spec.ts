@@ -150,7 +150,75 @@ test('API validates input and rejects cross-origin mutations', async ({ request 
   });
   expect(networkCsrf.status()).toBe(403);
 });
-test('builds and runs an assertion through the no-code UI', async ({ page }) => {
+
+test('a configured API failure cannot pass when its target request never occurs', async ({ request }) => {
+  const response = await request.post('/api/runs', {
+    headers: { 'X-LinkSunder': 'local' },
+    data: {
+      name: 'API fault must be triggered',
+      url: `${appURL}/demo/fixed`,
+      externalConsent: true,
+      type: 'failure',
+      steps: [
+        { action: 'fail', path: '/demo/api/messages' },
+        { action: 'check', selector: '#send' },
+      ],
+    },
+  });
+  expect(response.status()).toBe(200);
+  const started = await response.json() as { id: string };
+  await expect.poll(async () => (await request.get(`/api/runs/${started.id}`).then((item) => item.json())).status).not.toBe('running');
+  const report = await request.get(`/api/runs/${started.id}`).then((item) => item.json());
+  expect(report.network.injected).toBe(0);
+  expect(report.status).not.toBe('pass');
+  expect(report.error).toContain('FAULT NOT TRIGGERED');
+});
+
+test('API Test Builder runs a confirmed local request and keeps previews out of saved reports', async ({ page, request }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'API Test Builder' }).click();
+  await expect(page.getByRole('heading', { name: 'API Test Builder' })).toBeVisible();
+  await page.getByLabel('Endpoint').fill(`${appURL}/demo/api/messages`);
+  await page.getByRole('combobox', { name: 'Method' }).click();
+  await page.getByRole('option', { name: 'POST', exact: true }).click();
+  await page.getByRole('checkbox', { name: /I understand POST may change or delete server data/ }).check();
+  await page.getByRole('checkbox', { name: 'I own this API or have permission to test it.' }).check();
+  await page.getByRole('button', { name: 'Run API Test' }).click();
+  await expect(page.locator('.api-test-result .panel-head .badge')).toHaveText('PASS', { timeout: 15000 });
+  const jsonLink = page.getByRole('link', { name: 'JSON report' });
+  const report = await request.get((await jsonLink.getAttribute('href')) || '');
+  const saved = await report.json();
+  expect(saved.apiTest.method).toBe('POST');
+  expect(saved.apiTest.baseline.preview).toBeUndefined();
+});
+
+test('API Test Builder exposes an accessible Cancel action and stops latency without recovery replay', async ({ page, request }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'API Test Builder' }).click();
+  await expect(page.getByRole('heading', { name: 'API Test Builder' })).toBeVisible();
+  expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations).toEqual([]);
+  await page.screenshot({ path: 'docs/screenshots/api-test-builder.png', fullPage: true });
+  await page.getByLabel('Endpoint').fill(`${appURL}/`);
+  await page.getByText('Fault, recovery and retry', { exact: true }).click();
+  await page.getByRole('combobox', { name: 'Fault simulation' }).click();
+  await page.getByRole('option', { name: 'Add response delay', exact: true }).click();
+  await page.getByRole('spinbutton', { name: 'Added delay (ms)' }).fill('10000');
+  await page.getByRole('checkbox', { name: 'I own this API or have permission to test it.' }).check();
+  await page.getByRole('button', { name: 'Run API Test' }).click();
+  const cancel = page.getByRole('button', { name: 'Cancel', exact: true });
+  await expect(cancel).toBeVisible();
+  await cancel.click();
+  await expect(page.locator('.api-test-result .panel-head .badge')).toHaveText('CANCELLED', { timeout: 3000 });
+  const reportLink = page.getByRole('link', { name: 'JSON report' });
+  const reportResponse = await request.get((await reportLink.getAttribute('href')) || '');
+  const report = await reportResponse.json();
+  expect(report.apiTest.faultTriggered).toBe(true);
+  expect(report.apiTest.requestCount).toBe(2);
+  expect(report.apiTest.disrupted).toBeTruthy();
+  expect(report.apiTest.recovery).toBeUndefined();
+});
+
+test('builds an assertion through the no-code UI and labels it NOT TESTED without a fault', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'New test', exact: true }).click();
   await page.screenshot({ path: 'test-results/scenario-builder-empty.png', fullPage: true });
@@ -171,7 +239,8 @@ test('builds and runs an assertion through the no-code UI', async ({ page }) => 
   await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
   await page.getByRole('button', { name: 'Run Test', exact: true }).click();
   await expect(page.getByRole('link', { name: 'Download JSON Report' })).toBeVisible();
-  await expect(page.locator('.heading .badge')).toHaveText('pass');
+  await expect(page.locator('.heading .badge')).toHaveText('NOT TESTED');
+  await expect(page.getByText(/without a network disruption/i)).toBeVisible();
 });
 
 test('authorization gates scenario and network actions and resets after target changes', async ({ page }) => {

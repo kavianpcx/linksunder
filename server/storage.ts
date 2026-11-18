@@ -117,7 +117,7 @@ export async function loadStoredReports(directory: string) {
   const networkReports: NetworkReport[] = [];
   let damagedReports = 0;
 
-  const runStatus = new Set(['running', 'pass', 'fail', 'observed', 'error', 'cancelled']);
+  const runStatus = new Set(['running', 'pass', 'fail', 'observed', 'error', 'cancelled', 'not-tested', 'fault-not-triggered']);
   const networkStatus = new Set(['running', 'complete', 'cancelled', 'error']);
   for (const file of entries) {
     const runMatch = /^([a-f0-9]{8}-[a-f0-9]{4}-[1-8a-f0-9]{4}-[89ab][a-f0-9]{3}-[a-f0-9]{12})\.json$/i.exec(file);

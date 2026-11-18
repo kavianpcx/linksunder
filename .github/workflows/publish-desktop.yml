@@ -6,6 +6,10 @@ on:
         description: Successful Desktop packages run ID from the validated main commit
         required: true
         type: string
+  workflow_run:
+    workflows: [Desktop packages]
+    branches: [main]
+    types: [completed]
 permissions:
   contents: read
 jobs:
@@ -18,22 +22,34 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      BUILD_RUN: ${{ inputs.build_run }}
+      BUILD_RUN: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.build_run }}
     steps:
       - name: Verify tested build and obtain its commit
         run: |
           set -euo pipefail
           [[ "$BUILD_RUN" =~ ^[0-9]+$ ]]
           gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN" > build.json
-          jq -e '.name == "Desktop packages" and .status == "completed" and .conclusion == "success" and .head_branch == "main" and .event == "workflow_dispatch"' build.json
+          jq -e '.name == "Desktop packages" and .status == "completed" and .conclusion == "success" and .head_branch == "main" and (.event == "push" or .event == "workflow_dispatch")' build.json
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            jq -e '.event == "workflow_dispatch"' build.json
+          fi
           echo "BUILD_SHA=$(jq -r .head_sha build.json)" >> "$GITHUB_ENV"
       - name: Require the latest Windows and Linux CI checks for that commit
         run: |
           set -euo pipefail
-          gh api "repos/$GH_REPO/commits/$BUILD_SHA/check-runs?per_page=100" > checks.json
-          for check in 'verify (ubuntu-latest)' 'verify (windows-latest)'; do
-            jq -e --arg check "$check" '[.check_runs[] | select(.name == $check)] | sort_by(.started_at) | last | .status == "completed" and .conclusion == "success"' checks.json
+          for attempt in $(seq 1 30); do
+            gh api "repos/$GH_REPO/commits/$BUILD_SHA/check-runs?per_page=100" > checks.json
+            ready=true
+            for check in 'verify (ubuntu-latest)' 'verify (windows-latest)'; do
+              if ! jq -e --arg check "$check" '[.check_runs[] | select(.name == $check)] | sort_by(.started_at) | last | .status == "completed" and .conclusion == "success"' checks.json >/dev/null; then
+                ready=false
+              fi
+            done
+            if [[ "$ready" == true ]]; then exit 0; fi
+            sleep 10
           done
+          echo "Required Windows and Linux CI checks did not both succeed for $BUILD_SHA."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.BUILD_SHA }}

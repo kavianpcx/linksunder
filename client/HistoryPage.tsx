@@ -24,10 +24,16 @@ const statusOptions = [
   { value: 'pass', label: 'Passed' },
   { value: 'fail', label: 'Failed' },
   { value: 'observed', label: 'Observed' },
+  { value: 'not-tested', label: 'Not tested' },
+  { value: 'fault-not-triggered', label: 'Fault not triggered' },
   { value: 'complete', label: 'Complete' },
   { value: 'cancelled', label: 'Cancelled' },
   { value: 'error', label: 'Error' },
 ];
+const statusLabel = (status: string) => ({
+  pass: 'PASS', fail: 'FAIL', error: 'ERROR', cancelled: 'CANCELLED',
+  observed: 'OBSERVED', 'not-tested': 'NOT TESTED', 'fault-not-triggered': 'FAULT NOT TRIGGERED',
+}[status] || status);
 const sortOptions = [
   { value: 'newest', label: 'Newest first' },
   { value: 'oldest', label: 'Oldest first' },
@@ -304,7 +310,7 @@ export function HistoryPage({ summary, onOpenRun, onOpenNetwork, onRefresh }: Hi
                       <small>{item.kind === 'run' ? `Resilience test${item.target ? ` · ${item.target}` : ''}` : `Network inspection · ${item.target}`}</small>
                     </td>
                     <td>{item.kind === 'run' ? 'Resilience' : 'Network'}</td>
-                    <td><span className={`badge ${item.status}`}>{item.status}</span></td>
+                    <td><span className={`badge ${item.status}`}>{statusLabel(item.status)}</span></td>
                     <td>{formatRunTimestamp(item.started)}</td>
                     <td className="history-row-actions">
                       {item.status !== 'running' && <>
