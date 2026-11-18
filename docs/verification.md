@@ -48,5 +48,5 @@ not download Playwright's bundled Chromium: the regional CDN returned HTTP 403
 (`Access denied: this service is not available in your location`). The local Chrome
 browser was sufficient for source and UI tests, but is not substituted into the
 release package. Windows and Linux release packages must therefore be built and
-verified by the GitHub Actions matrix before publication. CI results are pending
-until that matrix runs on the final merged commit.
+verified by the GitHub Actions matrix before publication. Check the pull request's
+CI and the desktop-package workflow for the exact release commit before publishing.

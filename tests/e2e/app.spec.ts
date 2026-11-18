@@ -563,7 +563,7 @@ test('deletes a single report only after confirmation', async ({ page, request }
   expect((await request.get(`/api/runs/${selected.id}`)).status()).toBe(200);
   await page.getByRole('button', { name: `Delete report ${selectedTitle}` }).click();
   await page.getByRole('button', { name: 'Delete reports' }).click();
-  await expect(page.getByRole('status')).toContainText('1 report deleted');
+  await expect(page.locator('.notice[role="status"]')).toContainText('1 report deleted');
   expect((await request.get(`/api/runs/${selected.id}`)).status()).toBe(404);
 });
 
