@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { copyFile, lstat, link, mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { NetworkReport } from '../shared/network.js';
 import type { Run } from '../shared/schema.js';
@@ -46,12 +47,63 @@ export async function readReportDirectoryPreference(settingsFile: string): Promi
   return undefined;
 }
 
+export async function readReportStoragePreferences(settingsFile: string) {
+  try {
+    const saved: unknown = JSON.parse(await readFile(settingsFile, 'utf8'));
+    if (!isRecord(saved)) return {};
+    return {
+      reportDirectory: typeof saved.reportDirectory === 'string' && path.isAbsolute(saved.reportDirectory)
+        ? path.resolve(saved.reportDirectory) : undefined,
+      geolocationCityPath: typeof saved.geolocationCityPath === 'string' && path.isAbsolute(saved.geolocationCityPath)
+        ? path.resolve(saved.geolocationCityPath) : undefined,
+      geolocationAsnPath: typeof saved.geolocationAsnPath === 'string' && path.isAbsolute(saved.geolocationAsnPath)
+        ? path.resolve(saved.geolocationAsnPath) : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
 export async function persistReportDirectoryPreference(settingsFile: string, directory: string) {
   if (!path.isAbsolute(directory)) throw new Error('Report storage path must be absolute.');
   await mkdir(path.dirname(settingsFile), { recursive: true });
   const temporary = `${settingsFile}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, JSON.stringify({ reportDirectory: path.resolve(directory) }, null, 2), { flag: 'wx' });
+    let saved: Record<string, unknown> = {};
+    try {
+      const existing: unknown = JSON.parse(await readFile(settingsFile, 'utf8'));
+      if (isRecord(existing)) saved = existing;
+    } catch {
+      /* Replace a missing or damaged preference file with the selected path. */
+    }
+    await writeFile(temporary, JSON.stringify({ ...saved, reportDirectory: path.resolve(directory) }, null, 2), { flag: 'wx' });
+    await rename(temporary, settingsFile);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
+}
+
+export async function persistGeolocationPreference(
+  settingsFile: string,
+  kind: 'city' | 'asn',
+  databasePath?: string,
+) {
+  if (databasePath && !path.isAbsolute(databasePath)) throw new Error('Geolocation database path must be absolute.');
+  await mkdir(path.dirname(settingsFile), { recursive: true });
+  const key = kind === 'city' ? 'geolocationCityPath' : 'geolocationAsnPath';
+  const temporary = `${settingsFile}.${randomUUID()}.tmp`;
+  try {
+    let saved: Record<string, unknown> = {};
+    try {
+      const existing: unknown = JSON.parse(await readFile(settingsFile, 'utf8'));
+      if (isRecord(existing)) saved = existing;
+    } catch {
+      /* Replace a missing or damaged preference file with the selected database. */
+    }
+    if (databasePath) saved[key] = path.resolve(databasePath);
+    else delete saved[key];
+    await writeFile(temporary, JSON.stringify(saved, null, 2), { flag: 'wx' });
     await rename(temporary, settingsFile);
   } catch (error) {
     await unlink(temporary).catch(() => {});
@@ -116,37 +168,70 @@ export async function loadStoredReports(directory: string) {
   return { runs, networkReports, damagedReports };
 }
 
-function hash(contents: Buffer) {
-  return createHash('sha256').update(contents).digest('hex');
+async function hashFile(filePath: string) {
+  const digest = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) digest.update(chunk);
+  return digest.digest('hex');
 }
 
-export async function copyReportFiles(sourceDirectory: string, destinationDirectory: string) {
+export interface ReportCopyProgress {
+  copied: number;
+  processed: number;
+  total: number;
+  current?: string;
+}
+
+export async function copyReportFiles(
+  sourceDirectory: string,
+  destinationDirectory: string,
+  onProgress: (progress: ReportCopyProgress) => void = () => undefined,
+  signal?: AbortSignal,
+) {
   await assertWritableDirectory(destinationDirectory);
   const names = (await readdir(sourceDirectory)).filter((name) =>
     /^(?:network-)?[a-f0-9-]{36}\.(?:json|html)$/i.test(name),
-  );
+  ).sort();
   let copied = 0;
+  let processed = 0;
+  onProgress({ copied, processed, total: names.length });
   for (const name of names) {
+    if (signal?.aborted) throw new Error('Report folder migration was interrupted. The current folder and original reports remain selected.');
     const source = path.join(sourceDirectory, name);
     const destination = path.join(destinationDirectory, name);
-    let created = false;
+    const temporary = path.join(destinationDirectory, `.${name}.${randomUUID()}.linksunder-copying`);
+    const sourceInfo = await lstat(source);
+    if (!sourceInfo.isFile()) {
+      processed += 1;
+      onProgress({ copied, processed, total: names.length, current: name });
+      continue;
+    }
+    const sourceHash = await hashFile(source);
     try {
-      await copyFile(source, destination, constants.COPYFILE_EXCL);
-      created = true;
-      const [originalContents, copiedContents] = await Promise.all([readFile(source), readFile(destination)]);
-      if (hash(originalContents) !== hash(copiedContents)) {
-        await unlink(destination);
-        created = false;
+      try {
+        await lstat(destination);
+        if (await hashFile(destination) !== sourceHash)
+          throw new Error(`A different file already exists at ${destination}. Your original reports remain unchanged.`);
+        processed += 1;
+        onProgress({ copied, processed, total: names.length, current: name });
+        continue;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      await copyFile(source, temporary, constants.COPYFILE_EXCL);
+      if (await hashFile(temporary) !== sourceHash)
         throw new Error(`A report could not be verified at ${destination}. Your original reports remain unchanged.`);
+      try {
+        await link(temporary, destination);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (await hashFile(destination) !== sourceHash)
+          throw new Error(`A different file already exists at ${destination}. Your original reports remain unchanged.`, { cause: error });
       }
       copied += 1;
-    } catch (error) {
-      if (created) await unlink(destination).catch(() => {});
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const [existing, current] = await Promise.all([readFile(destination), readFile(source)]);
-      if (hash(existing) !== hash(current)) {
-        throw new Error(`A different file already exists at ${destination}. Your original reports remain unchanged.`, { cause: error });
-      }
+      processed += 1;
+      onProgress({ copied, processed, total: names.length, current: name });
+    } finally {
+      await unlink(temporary).catch(() => {});
     }
   }
   return { copied, total: names.length };
@@ -156,6 +241,72 @@ export async function removeReportFiles(directory: string, kind: StoredReportKin
   for (const name of storedReportFilenames(kind, id)) {
     try {
       await unlink(path.join(directory, name));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+}
+
+function stagedReportFilename(name: string) {
+  return `.${name}.linksunder-deleting`;
+}
+
+export async function stageReportFiles(directory: string, kind: StoredReportKind, id: string) {
+  const moved: string[] = [];
+  try {
+    for (const name of storedReportFilenames(kind, id)) {
+      const source = path.join(directory, name);
+      const staged = path.join(directory, stagedReportFilename(name));
+      try {
+        await lstat(source);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      try {
+        await lstat(staged);
+        throw new Error(`A previous report deletion is awaiting recovery for ${name}.`);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      await rename(source, staged);
+      moved.push(name);
+    }
+    return moved;
+  } catch (error) {
+    for (const name of moved.reverse()) {
+      const source = path.join(directory, name);
+      const staged = path.join(directory, stagedReportFilename(name));
+      await rename(staged, source).catch(() => {});
+    }
+    throw error;
+  }
+}
+
+export async function restoreStagedReportFiles(directory: string, kind: StoredReportKind, id: string) {
+  for (const name of storedReportFilenames(kind, id)) {
+    const original = path.join(directory, name);
+    const staged = path.join(directory, stagedReportFilename(name));
+    try {
+      await lstat(staged);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    try {
+      await lstat(original);
+      throw new Error(`Cannot restore ${name} because a file with that name already exists.`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await rename(staged, original);
+  }
+}
+
+export async function purgeStagedReportFiles(directory: string, kind: StoredReportKind, id: string) {
+  for (const name of storedReportFilenames(kind, id)) {
+    try {
+      await unlink(path.join(directory, stagedReportFilename(name)));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }

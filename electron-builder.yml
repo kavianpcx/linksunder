@@ -36,4 +36,8 @@ linux:
   category: Development
   maintainer: LinkSunder contributors
   artifactName: LinkSunder-${version}-Linux-${arch}.${ext}
-publish: null
+publish:
+  - provider: github
+    owner: kavianpcx
+    repo: linksunder
+    releaseType: release

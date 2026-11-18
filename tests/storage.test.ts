@@ -49,6 +49,32 @@ describe('report storage', () => {
     }
   });
 
+  it('reports verified-copy progress and stops between files when cancelled', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'linksunder-storage-cancel-'));
+    const source = path.join(root, 'old');
+    const destination = path.join(root, 'new');
+    await mkdir(source);
+    await writeFile(path.join(source, `${id}.json`), '{"kind":"run"}');
+    await writeFile(path.join(source, `${id}.html`), '<h1>Run</h1>');
+    const controller = new AbortController();
+    const progress: Array<{ copied: number; processed: number; total: number; current?: string }> = [];
+    try {
+      await expect(copyReportFiles(source, destination, (item) => {
+        progress.push(item);
+        if (item.processed === 1) controller.abort();
+      }, controller.signal)).rejects.toThrow('migration was interrupted');
+      expect(progress.at(-1)).toMatchObject({ processed: 1, total: 2 });
+      expect(await readFile(path.join(source, `${id}.json`), 'utf8')).toContain('run');
+      const firstCopy = progress.at(-1)?.current;
+      const secondCopy = firstCopy === `${id}.html` ? `${id}.json` : `${id}.html`;
+      expect(await readFile(path.join(destination, firstCopy!), 'utf8')).toBe(firstCopy === `${id}.html` ? '<h1>Run</h1>' : '{"kind":"run"}');
+      await expect(readFile(path.join(destination, secondCopy), 'utf8')).rejects.toThrow();
+      expect(await readFile(path.join(source, `${id}.html`), 'utf8')).toBe('<h1>Run</h1>');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('deletes only the selected report files and tolerates missing files', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'linksunder-storage-delete-'));
     await writeFile(path.join(root, `${id}.json`), '{}');

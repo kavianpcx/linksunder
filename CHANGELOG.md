@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Added indexed, paginated local report history with incremental migration and recoverable bulk deletion.
+- Added optional local MaxMind geolocation and local/UTC timestamp preferences for network reports.
+- Added manually controlled in-app updates for Windows installers and Linux AppImages.
+- Improved authorization gating, action states, themed controls, accessibility, and large-history performance.
+
 ## 0.3.0
 
 - Added a single-target Network Inspector for DNS, bounded TCP reachability, safe HTTP header checks, TLS certificate summaries, findings, cancellation, and JSON/HTML exports.

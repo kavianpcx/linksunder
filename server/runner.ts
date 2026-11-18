@@ -7,6 +7,7 @@ export function newRun(s: Scenario): Run {
   return {
     id: randomUUID(),
     name: s.name,
+    targetHost: new URL(s.url).hostname,
     type: s.type,
     status: 'running',
     started: new Date().toISOString(),

@@ -72,6 +72,30 @@ export interface TlsSummary {
   error?: string;
 }
 
+export interface GeolocationRecord {
+  ip: string;
+  status: 'found' | 'private' | 'not-found' | 'unavailable';
+  country?: string;
+  countryCode?: string;
+  region?: string;
+  city?: string;
+  accuracyRadiusKm?: number;
+  timeZone?: string;
+  asn?: number;
+  organization?: string;
+  source?: string;
+  cityDatabaseDate?: string;
+  asnDatabaseDate?: string;
+}
+
+export interface GeolocationDatabaseInfo {
+  kind: 'city' | 'asn';
+  configured: boolean;
+  path?: string;
+  databaseType?: string;
+  updatedAt?: string;
+}
+
 export interface NetworkFinding {
   severity: FindingSeverity;
   title: string;
@@ -91,6 +115,7 @@ export interface NetworkReport {
   ports: PortResult[];
   http: HttpCheck[];
   tls?: TlsSummary;
+  geolocation?: GeolocationRecord[];
   findings: NetworkFinding[];
   limitations: string[];
   error?: string;

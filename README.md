@@ -8,7 +8,7 @@ your UI preserves the state that matters. No account, cloud service, or AI API.
 
 ### Download the application
 
-**[⬇ Download for Windows — EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Windows-x64.exe)** · **[⬇ Download for Linux — DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Linux-amd64.deb)**
+**[⬇ Download for Windows — EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Windows-x64.exe)** · **[⬇ Download for Linux — DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Linux-amd64.deb)**
 
 **Download → Install → Open LinkSunder.** No terminal commands or developer tools required.
 On Windows, open the downloaded EXE, finish installation, then open LinkSunder from Start or the desktop shortcut.
@@ -27,10 +27,10 @@ There is no trial mode, demo-only edition, account or paid feature gate.
 
 | Platform                             | File                                                                                                                         | What to do                                                                                                            |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Windows 11, x64                      | [Download EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Windows-x64.exe)  | Open the installer, finish installation, then open LinkSunder from Start or the desktop shortcut.                     |
-| Windows, x64 portable                | [Download ZIP](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Windows-x64.zip)            | Extract the entire folder and open `LinkSunder.exe`. Keep its resources beside it.                                    |
-| Ubuntu / Debian desktop, x64         | [Download DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Linux-amd64.deb)  | Open it in the system software installer, install, then launch LinkSunder from Applications.                          |
-| Other compatible Linux desktops, x64 | [Download AppImage](https://github.com/kavianpcx/linksunder/releases/download/v0.3.0/LinkSunder-0.3.0-Linux-x86_64.AppImage) | Allow execution in file Properties, then double-click. System library/FUSE compatibility depends on the distribution. |
+| Windows 11, x64                      | [Download EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Windows-x64.exe)  | Open the installer, finish installation, then open LinkSunder from Start or the desktop shortcut.                     |
+| Windows, x64 portable                | [Download ZIP](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Windows-x64.zip)            | Extract the entire folder and open `LinkSunder.exe`. Keep its resources beside it.                                    |
+| Ubuntu / Debian desktop, x64         | [Download DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Linux-amd64.deb)  | Open it in the system software installer, install, then launch LinkSunder from Applications.                          |
+| Other compatible Linux desktops, x64 | [Download AppImage](https://github.com/kavianpcx/linksunder/releases/download/v0.4.0/LinkSunder-0.4.0-Linux-x86_64.AppImage) | Allow execution in file Properties, then double-click. System library/FUSE compatibility depends on the distribution. |
 
 The desktop packages include the application runtime and test Chromium. They start
 their engine automatically on loopback and stop it when the window closes. The
@@ -95,7 +95,7 @@ The demo uses no external service. Its two results are saved to your real histor
 
 ## Features
 
-- A responsive dashboard with dark/light themes, real history, and one active run.
+- A responsive dashboard with dark/light themes, indexed server-side history, and one active run.
 - Ordered no-code steps: open, click, fill, offline, online, fail/delay API, check
   element/value, and screenshot. Add, edit, remove, or reorder; import/export JSON.
 - Chromium network emulation and controlled HTTP 503 responses.
@@ -104,8 +104,16 @@ The demo uses no external service. Its two results are saved to your real histor
 - A single-host Network Inspector for DNS records, bounded TCP reachability checks,
   HTTP response headers, TLS certificate basics, and practical findings.
 - Searchable combined history for resilience and network reports, with confirmed
-  single, bulk, or clear-all deletion.
-- Settings for report storage, appearance, default timeout, and screenshot preference.
+  single, bulk, or clear-all deletion, including progress for large cleanups.
+- Server-side search and 10/20/50-row pagination backed by a local SQLite metadata
+  index. Complete reports remain as separate JSON/HTML files; first-time legacy
+  indexing runs incrementally and reports progress.
+- Settings for report storage, appearance, local/UTC timestamps, default timeout,
+  screenshot preference, optional local geolocation databases, and software updates.
+- Optional offline IP geolocation with user-supplied MaxMind City and ASN databases;
+  no IP address is sent to a geolocation service.
+- User-triggered updates for Windows NSIS installers and Linux AppImage packages.
+  Windows portable ZIP and Linux DEB users update manually through their usual installer.
 - No assertion means **OBSERVED**, never PASS. Failed assertions produce FAIL;
   setup/action errors produce ERROR, and stopped runs produce CANCELLED.
 
@@ -138,15 +146,28 @@ penetration test, cryptographic assessment, or substitute for a security review.
 
 ![Network Inspector report from a local test target](docs/screenshots/network-inspector.png)
 
+### Optional offline IP geolocation
+
+In **Settings**, select local MaxMind City and/or ASN `.mmdb` files to add approximate
+country, region, city, ASN, and organization information for public IP addresses found
+by an inspection. Databases are optional and are never bundled with LinkSunder. Get
+GeoLite databases from [MaxMind](https://www.maxmind.com/en/geolite-free-ip-geolocation-data)
+and follow its account, license, attribution, and update requirements. LinkSunder makes
+no location-service requests and filters private, reserved, and documentation IPs.
+Geolocation is approximate, may be missing or outdated, and cannot identify a household.
+The time zone in a database is an estimate associated with the IP range, not the user's
+or server's verified time zone.
+
 ![Searchable local test history](docs/screenshots/history.png)
 
 ## Reports and preferences
 
 The **Reports & history** page combines resilience runs and network inspections. Search
-by name or target, open a saved result, download it again as JSON or standalone HTML,
-or delete one, selected reports, or all completed history after confirmation. Running
-checks cannot be deleted. Reports stay on this computer until you remove them; automatic
-retention cleanup is not enabled.
+by name or target on the local metadata index, choose 10, 20 or 50 rows per page, open a
+saved result, download it again as JSON or standalone HTML, or delete one, selected
+reports, or all completed history after confirmation. Large cleanup runs in resumable
+batches and reports progress. Running checks cannot be deleted. Reports stay on this
+computer until you remove them; automatic retention cleanup is not enabled.
 
 In **Settings**, choose a report folder with Browse or enter an absolute path. LinkSunder
 checks that the folder can be written, copies JSON and HTML reports, verifies each copy
@@ -154,6 +175,33 @@ with SHA-256, and keeps the original files. The selected folder is saved for fut
 launches. Corrupted report files are left in place and counted so they can be recovered;
 they are not silently discarded. Appearance, default step timeout and screenshot
 preference are stored locally. Reset defaults does not move or delete report files.
+For local timestamps, choose **Local time** or **UTC** in Settings.
+
+The first launch with an existing reports folder incrementally creates a local
+`history.sqlite` metadata index; it does not rewrite or delete the source reports.
+Indexing progress and damaged-file counts are available while it runs. The history page
+then requests only the selected metadata page rather than downloading full reports.
+Maintainers can run `npm run benchmark:history` to create isolated 100, 10,000, and
+100,000-report fixtures, measure indexing/search/pagination/deletion, and measure actual
+history-page navigation at 100,000 reports. The [recorded run](docs/benchmarks/history-v0.4.0.md)
+states its hardware and limits; the benchmark never uses the user's report directory.
+
+## Software updates
+
+The **Software updates** section in Settings checks only after the user selects **Check
+for Updates**. It shows release notes, download size, real transfer progress, and a
+cancel/retry option; downloads and installation are never silent. Pause/resume is not
+offered. A downloaded update is checked against the SHA-512 value in the official
+[GitHub release metadata](https://github.com/kavianpcx/linksunder/releases), and
+installation requires confirmation after active tests, migrations, and cleanup stop.
+User reports and settings remain outside the installation directory.
+
+In-app updates are supported for installed **Windows NSIS** packages and **Linux
+AppImage** packages. The Windows portable ZIP and Linux DEB are updated manually from
+the official [releases page](https://github.com/kavianpcx/linksunder/releases) so the
+system package installer retains control of DEB updates. Packages currently do not have
+commercial code signatures; checksums detect file changes but do not prove publisher
+identity.
 
 ## How it works
 

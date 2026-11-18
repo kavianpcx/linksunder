@@ -1,53 +1,117 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Download, FileText, Search, Trash2 } from 'lucide-react';
-import type { NetworkReport } from '../shared/network';
-import type { Run } from '../shared/schema';
+import { ChevronLeft, ChevronRight, Download, FileText, LoaderCircle, Search, Trash2 } from 'lucide-react';
+import type { HistoryDeleteJob, HistoryPageData, HistoryRecord, HistorySummary } from '../shared/history';
 import { api } from './api';
 import { formatRunTimestamp } from './format-run-timestamp';
-
-type HistoryItem =
-  | { kind: 'run'; id: string; title: string; started: string; status: string; subtitle: string; run: Run }
-  | { kind: 'network'; id: string; title: string; started: string; status: string; subtitle: string; network: NetworkReport };
+import { SelectField } from './SelectField';
 
 interface HistoryPageProps {
-  runs: Run[];
-  networkReports: NetworkReport[];
-  onOpenRun: (run: Run) => void;
-  onOpenNetwork: (report: NetworkReport) => void;
+  summary: HistorySummary;
+  onOpenRun: (id: string) => void;
+  onOpenNetwork: (id: string) => void;
   onRefresh: () => Promise<void>;
 }
 
-export function HistoryPage({ runs, networkReports, onOpenRun, onOpenNetwork, onRefresh }: HistoryPageProps) {
+type PendingDelete = { type: 'selected'; items: HistoryRecord[] } | { type: 'all'; total: number };
+
+const kindOptions = [
+  { value: 'all', label: 'All report types' },
+  { value: 'run', label: 'Resilience tests' },
+  { value: 'network', label: 'Network inspections' },
+];
+const statusOptions = [
+  { value: 'all', label: 'All results' },
+  { value: 'pass', label: 'Passed' },
+  { value: 'fail', label: 'Failed' },
+  { value: 'observed', label: 'Observed' },
+  { value: 'complete', label: 'Complete' },
+  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'error', label: 'Error' },
+];
+const sortOptions = [
+  { value: 'newest', label: 'Newest first' },
+  { value: 'oldest', label: 'Oldest first' },
+];
+const pageSizeOptions = [10, 20, 50].map((value) => ({ value: String(value), label: `${value} per page` }));
+
+function pageNumbers(page: number, totalPages: number) {
+  const values = [...new Set([1, totalPages, page - 2, page - 1, page, page + 1, page + 2])]
+    .filter((value) => value >= 1 && value <= totalPages)
+    .sort((left, right) => left - right);
+  const result: Array<number | 'gap'> = [];
+  values.forEach((value, index) => {
+    if (index > 0 && value - values[index - 1] > 1) result.push('gap');
+    result.push(value);
+  });
+  return result;
+}
+
+export function HistoryPage({ summary, onOpenRun, onOpenNetwork, onRefresh }: HistoryPageProps) {
+  const [data, setData] = useState<HistoryPageData>();
   const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [kind, setKind] = useState('all');
+  const [status, setStatus] = useState('all');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [sort, setSort] = useState('newest');
   const [selected, setSelected] = useState<string[]>([]);
-  const [pendingDelete, setPendingDelete] = useState<HistoryItem[] | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [deleteJob, setDeleteJob] = useState<HistoryDeleteJob>();
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [reload, setReload] = useState(0);
   const cancelButton = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const requestSequence = useRef(0);
   const dialogWasOpen = useRef(false);
+  const completedJob = useRef<string | undefined>(undefined);
 
-  const allItems: HistoryItem[] = useMemo(() => [
-    ...runs.map((run): HistoryItem => ({
-      kind: 'run', id: run.id, title: run.name, started: run.started, status: run.status,
-      subtitle: `Resilience test · ${run.type}`, run,
-    })),
-    ...networkReports.map((report): HistoryItem => ({
-      kind: 'network', id: report.id, title: report.hostname, started: report.started, status: report.status,
-      subtitle: `Network inspection · ${report.target}`, network: report,
-    })),
-  ].sort((left, right) => Date.parse(right.started) - Date.parse(left.started)), [runs, networkReports]);
+  useEffect(() => { void onRefresh(); }, [onRefresh]);
 
-  const filtered = allItems.filter((item) =>
-    `${item.title} ${item.subtitle} ${item.status}`.toLowerCase().includes(query.trim().toLowerCase()),
+  const visibleRecords = data?.items ?? [];
+  const selectedItems = useMemo(
+    () => visibleRecords.filter((item) => selected.includes(`${item.kind}:${item.id}`) && item.status !== 'running'),
+    [visibleRecords, selected],
   );
-  const deletableItems = allItems.filter((item) => item.status !== 'running');
-  const deletableFiltered = filtered.filter((item) => item.status !== 'running');
-  const selectedItems = deletableItems.filter((item) => selected.includes(`${item.kind}:${item.id}`));
-  const keyOf = (item: HistoryItem) => `${item.kind}:${item.id}`;
-  const allVisibleSelected = deletableFiltered.length > 0 && deletableFiltered.every((item) => selected.includes(keyOf(item)));
+  const deletableVisible = visibleRecords.filter((item) => item.status !== 'running');
+  const allVisibleSelected = deletableVisible.length > 0 && deletableVisible.every((item) => selected.includes(`${item.kind}:${item.id}`));
+
+  useEffect(() => {
+    let live = true;
+    const sequence = ++requestSequence.current;
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), sort });
+      if (query.trim()) params.set('q', query.trim());
+      if (kind !== 'all') params.set('kind', kind);
+      if (status !== 'all') params.set('status', status);
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      setLoading(true);
+      setError('');
+      void api<HistoryPageData>(`/api/history?${params.toString()}`)
+        .then((result) => {
+          if (!live || sequence !== requestSequence.current) return;
+          setData(result);
+          setSelected([]);
+          if (result.page !== page) setPage(result.page);
+        })
+        .catch((reason) => {
+          if (live && sequence === requestSequence.current) setError((reason as Error).message);
+        })
+        .finally(() => {
+          if (live && sequence === requestSequence.current) setLoading(false);
+        });
+    }, query.trim() ? 250 : 0);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [page, pageSize, query, kind, status, from, to, sort, reload]);
 
   useEffect(() => {
     if (pendingDelete) {
@@ -60,9 +124,40 @@ export function HistoryPage({ runs, networkReports, onOpenRun, onOpenNetwork, on
     }
   }, [pendingDelete]);
 
-  function requestDelete(items: HistoryItem[]) {
+  useEffect(() => {
+    if (!deleteJob || deleteJob.status !== 'running') return;
+    let live = true;
+    const poll = async () => {
+      try {
+        const updated = await api<HistoryDeleteJob>(`/api/history/delete-all/${deleteJob.id}`);
+        if (!live) return;
+        setDeleteJob(updated);
+        if (updated.status === 'complete' && completedJob.current !== updated.id) {
+          completedJob.current = updated.id;
+          setNotice(`Deleted ${updated.deleted} of ${updated.total} reports.${updated.failed ? ` ${updated.failed} could not be removed; their files were preserved.` : ''}`);
+          setReload((value) => value + 1);
+          void onRefresh();
+        }
+      } catch (reason) {
+        if (live) setError((reason as Error).message);
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 500);
+    void poll();
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [deleteJob?.id, deleteJob?.status, onRefresh]);
+
+  function requestDelete(items: HistoryRecord[]) {
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setPendingDelete(items);
+    setPendingDelete({ type: 'selected', items });
+  }
+
+  function requestDeleteAll() {
+    returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPendingDelete({ type: 'all', total: summary.resilienceCount + summary.networkCount });
   }
 
   function handleDialogKeyDown(event: KeyboardEvent<HTMLElement>) {
@@ -90,29 +185,44 @@ export function HistoryPage({ runs, networkReports, onOpenRun, onOpenNetwork, on
     }
   }
 
-  function toggle(item: HistoryItem) {
-    const key = keyOf(item);
+  function toggle(item: HistoryRecord) {
+    const key = `${item.kind}:${item.id}`;
     setSelected((current) => current.includes(key) ? current.filter((entry) => entry !== key) : [...current, key]);
   }
 
   function toggleVisible() {
-    const visibleKeys = deletableFiltered.map(keyOf);
+    const keys = deletableVisible.map((item) => `${item.kind}:${item.id}`);
     setSelected((current) => allVisibleSelected
-      ? current.filter((key) => !visibleKeys.includes(key))
-      : [...new Set([...current, ...visibleKeys])]);
+      ? current.filter((key) => !keys.includes(key))
+      : [...new Set([...current, ...keys])]);
   }
 
-  async function deleteSelected(items: HistoryItem[]) {
+  async function confirmDeletion() {
+    if (!pendingDelete) return;
     setBusy(true);
     setError('');
+    setNotice('');
     try {
-      const result = await api<{ deleted: number }>('/api/history/delete', {
-        reports: items.map(({ id, kind }) => ({ id, kind })),
-      });
-      setPendingDelete(null);
-      setSelected([]);
-      setNotice(`${result.deleted} report${result.deleted === 1 ? '' : 's'} deleted from this computer.`);
-      await onRefresh();
+      if (pendingDelete.type === 'selected') {
+        const result = await api<{ deleted: number; failed?: Array<{ id: string; error: string }> }>('/api/history/delete', {
+          reports: pendingDelete.items.map(({ id, kind }) => ({ id, kind })),
+        });
+        setNotice(`${result.deleted} report${result.deleted === 1 ? '' : 's'} deleted from this computer.${result.failed?.length ? ` ${result.failed.length} could not be removed; their files were preserved.` : ''}`);
+        setSelected([]);
+        setPendingDelete(null);
+        setReload((value) => value + 1);
+        await onRefresh();
+      } else {
+        const created = await api<Pick<HistoryDeleteJob, 'id' | 'status' | 'total'>>('/api/history/delete-all', {});
+        const initial: HistoryDeleteJob = { ...created, deleted: 0, failed: 0, created: new Date().toISOString(), updated: new Date().toISOString(), failures: [] };
+        setDeleteJob(initial);
+        setPendingDelete(null);
+        if (created.status === 'complete') {
+          setNotice(`Deleted 0 of ${created.total} reports.`);
+          setReload((value) => value + 1);
+          await onRefresh();
+        }
+      }
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -120,86 +230,117 @@ export function HistoryPage({ runs, networkReports, onOpenRun, onOpenNetwork, on
     }
   }
 
+  const pageCount = data?.totalPages ?? 1;
+  const pages = pageNumbers(data?.page ?? page, pageCount);
+  const indexing = summary.indexing.status === 'indexing';
+  const indexReady = summary.indexing.status === 'complete';
+  const jobProgress = deleteJob?.total ? Math.round((deleteJob.deleted + deleteJob.failed) / deleteJob.total * 100) : 100;
+
   return (
     <>
       <div className="heading">
         <div>
           <div className="eyebrow">LOCAL REPORTS</div>
-        <h1 id="history-heading" tabIndex={-1}>Reports &amp; history</h1>
+          <h1 id="history-heading" tabIndex={-1}>Reports &amp; history</h1>
           <p>Open, export, search, or remove previous checks stored on this computer.</p>
         </div>
-        <button className="secondary" onClick={() => requestDelete(deletableItems)} disabled={!deletableItems.length}>
-          <Trash2 size={16} /> Clear all history
+        <button className="secondary" onClick={requestDeleteAll} disabled={!(summary.resilienceCount + summary.networkCount) || !indexReady} title={!indexReady ? 'Available when history indexing finishes' : undefined}>
+          <Trash2 size={16} aria-hidden="true" /> Clear all history
         </button>
       </div>
       {error && <div role="alert" className="alert">{error}<button aria-label="Dismiss error" onClick={() => setError('')}>×</button></div>}
       {notice && <p role="status" className="notice">{notice}</p>}
+      {indexing && <p className="notice indexing-notice" role="status"><LoaderCircle className="spin" size={15} aria-hidden="true" /> Indexing existing report metadata: {summary.indexing.scanned.toLocaleString()} of {summary.indexing.total.toLocaleString()}. Reports remain on disk during this step.</p>}
+      {summary.deletionRecoveryError && <p className="alert" role="alert">{summary.deletionRecoveryError}</p>}
+      {deleteJob && <section className="panel delete-progress" aria-live="polite">
+        <div><strong>{deleteJob.status === 'complete' ? 'History cleanup finished' : 'Deleting selected history'}</strong><p>{deleteJob.deleted.toLocaleString()} of {deleteJob.total.toLocaleString()} removed · {deleteJob.failed.toLocaleString()} kept because of file errors</p></div>
+        {deleteJob.status === 'running' ? <progress max={100} value={jobProgress} aria-label="History deletion progress" /> : <button type="button" className="secondary" onClick={() => setDeleteJob(undefined)}>Dismiss</button>}
+      </section>}
       <section className="panel history-panel">
         <div className="panel-head history-toolbar">
           <label className="search-field">
             <Search size={16} aria-hidden="true" />
             <span className="sr-only">Search report history</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search reports…" />
+            <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Search names or hosts…" />
           </label>
           <div className="history-actions">
-            <span>{filtered.length} of {allItems.length} reports</span>
+            <span>{data ? `${data.total.toLocaleString()} reports` : 'Loading reports'}</span>
             <button className="secondary" disabled={!selectedItems.length} onClick={() => requestDelete(selectedItems)}>
-              <Trash2 size={15} /> Delete selected ({selectedItems.length})
+              <Trash2 size={15} aria-hidden="true" /> Delete selected ({selectedItems.length})
             </button>
           </div>
         </div>
-        {!allItems.length ? (
+        <div className="history-filters">
+          <SelectField label="Report type" value={kind} options={kindOptions} onChange={(value) => { setKind(value); setPage(1); }} />
+          <SelectField label="Result" value={status} options={statusOptions} onChange={(value) => { setStatus(value); setPage(1); }} />
+          <SelectField label="Sort" value={sort} options={sortOptions} onChange={(value) => { setSort(value); setPage(1); }} />
+          <label>Date from<input aria-label="Date from" type="date" value={from} max={to || undefined} onChange={(event) => { setFrom(event.target.value); setPage(1); }} /></label>
+          <label>Date to<input aria-label="Date to" type="date" value={to} min={from || undefined} onChange={(event) => { setTo(event.target.value); setPage(1); }} /></label>
+        </div>
+        {loading && data && <p className="hint" role="status">Loading this page…</p>}
+        {!data && !error ? <div className="empty"><LoaderCircle className="spin" size={22} aria-hidden="true" /><p role="status">Loading reports…</p></div> : !data?.total ? (
           <div className="empty">
             <span className="empty-icon"><FileText size={27} /></span>
-            <h3>No reports yet</h3>
-            <p>Your resilience test and network inspection reports will appear here.</p>
+            <h3>{query || kind !== 'all' || status !== 'all' || from || to ? 'No matching reports' : 'No reports yet'}</h3>
+            <p>{query || kind !== 'all' || status !== 'all' || from || to ? 'Try changing your search or filters.' : 'Your resilience tests and network inspections will appear here.'}</p>
           </div>
-        ) : !filtered.length ? (
-          <div className="empty compact-empty"><h3>No matching reports</h3><p>Try another target or report name.</p></div>
+        ) : !visibleRecords.length ? (
+          <div className="empty compact-empty"><h3>No reports on this page</h3><p>Choose another page or search filter.</p></div>
         ) : (
-          <div className="tablewrap">
-            <table className="history-table">
-              <thead><tr>
-                <th><input aria-label="Select all visible reports" type="checkbox" checked={allVisibleSelected} disabled={!deletableFiltered.length} onChange={toggleVisible} /></th>
-                <th>Report</th><th>Type</th><th>Result</th><th>Started</th><th>Actions</th>
-              </tr></thead>
-              <tbody>{filtered.map((item) => {
-                const key = keyOf(item);
-                const format = item.kind === 'run' ? `/api/reports/${item.id}` : `/api/network/reports/${item.id}`;
-                return <tr key={key}>
-                  <td><input aria-label={`Select ${item.title}`} type="checkbox" checked={selected.includes(key)} onChange={() => toggle(item)} disabled={item.status === 'running'} /></td>
-                  <td>
-                    <button className="runlink history-open" onClick={() => item.kind === 'run' ? onOpenRun(item.run) : onOpenNetwork(item.network)}>
-                      {item.title}
-                    </button>
-                    <small>{item.subtitle}</small>
-                  </td>
-                  <td>{item.kind === 'run' ? 'Resilience' : 'Network'}</td>
-                  <td><span className={`badge ${item.status}`}>{item.status}</span></td>
-                  <td>{formatRunTimestamp(item.started)}</td>
-                  <td className="history-row-actions">
-                    {item.status !== 'running' && <>
-                      <a className="icon-action" aria-label={`Download JSON for ${item.title}`} data-tooltip="Download JSON" href={`${format}/json`}><Download size={16} /></a>
-                      <a className="icon-action" aria-label={`Download HTML for ${item.title}`} data-tooltip="Download HTML" href={`${format}/html`}><FileText size={16} /></a>
-                    </>}
-                    <button className="icon-action danger-action" aria-label={`Delete report ${item.title}`} data-tooltip="Delete report" onClick={() => requestDelete([item])} disabled={item.status === 'running'}><Trash2 size={16} /></button>
-                  </td>
-                </tr>;
-              })}</tbody>
-            </table>
-          </div>
+          <>
+            <div className="tablewrap">
+              <table className="history-table">
+                <thead><tr>
+                  <th><input aria-label="Select all visible reports" type="checkbox" checked={allVisibleSelected} disabled={!deletableVisible.length} onChange={toggleVisible} /></th>
+                  <th>Report</th><th>Type</th><th>Result</th><th>Started</th><th>Actions</th>
+                </tr></thead>
+                <tbody>{visibleRecords.map((item) => {
+                  const key = `${item.kind}:${item.id}`;
+                  const format = item.kind === 'run' ? `/api/reports/${item.id}` : `/api/network/reports/${item.id}`;
+                  return <tr key={key}>
+                    <td><input aria-label={`Select ${item.title}`} type="checkbox" checked={selected.includes(key)} onChange={() => toggle(item)} disabled={item.status === 'running'} /></td>
+                    <td>
+                      <button className="runlink history-open" onClick={() => item.kind === 'run' ? onOpenRun(item.id) : onOpenNetwork(item.id)}>{item.title}</button>
+                      <small>{item.kind === 'run' ? `Resilience test${item.target ? ` · ${item.target}` : ''}` : `Network inspection · ${item.target}`}</small>
+                    </td>
+                    <td>{item.kind === 'run' ? 'Resilience' : 'Network'}</td>
+                    <td><span className={`badge ${item.status}`}>{item.status}</span></td>
+                    <td>{formatRunTimestamp(item.started)}</td>
+                    <td className="history-row-actions">
+                      {item.status !== 'running' && <>
+                        <a className="icon-action" aria-label={`Download JSON for ${item.title}`} data-tooltip="Download JSON" href={`${format}/json`}><Download size={16} aria-hidden="true" /></a>
+                        <a className="icon-action" aria-label={`Download HTML for ${item.title}`} data-tooltip="Download HTML" href={`${format}/html`}><FileText size={16} aria-hidden="true" /></a>
+                      </>}
+                      <button className="icon-action danger-action" aria-label={`Delete report ${item.title}`} data-tooltip="Delete report" onClick={() => requestDelete([item])} disabled={item.status === 'running'}><Trash2 size={16} aria-hidden="true" /></button>
+                    </td>
+                  </tr>;
+                })}</tbody>
+              </table>
+            </div>
+            <div className="history-pagination">
+              <span>Page {data?.page ?? page} of {pageCount} · {data?.total.toLocaleString()} reports</span>
+              <nav aria-label="History pages">
+                <button type="button" className="page-button" aria-label="Previous page" disabled={(data?.page ?? page) <= 1 || loading} onClick={() => setPage((data?.page ?? page) - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>
+                {pages.map((value, index) => value === 'gap'
+                  ? <span className="page-gap" key={`gap-${index}`} aria-hidden="true">…</span>
+                  : <button type="button" className={value === (data?.page ?? page) ? 'page-button current' : 'page-button'} aria-label={`Page ${value}`} aria-current={value === (data?.page ?? page) ? 'page' : undefined} key={value} disabled={loading} onClick={() => setPage(value)}>{value}</button>)}
+                <button type="button" className="page-button" aria-label="Next page" disabled={(data?.page ?? page) >= pageCount || loading} onClick={() => setPage((data?.page ?? page) + 1)}><ChevronRight size={16} aria-hidden="true" /></button>
+              </nav>
+              <SelectField ariaLabel="History page size" value={String(pageSize)} options={pageSizeOptions} onChange={(value) => { setPageSize(Number(value)); setPage(1); }} />
+            </div>
+          </>
         )}
       </section>
       {pendingDelete && (
         <div className="modal-scrim">
           <section ref={dialogRef} className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-history-title" aria-describedby="delete-history-description" tabIndex={-1} onKeyDown={handleDialogKeyDown}>
-            <div className="modal-icon"><Trash2 size={22} /></div>
-            <h2 id="delete-history-title">Delete {pendingDelete.length} report{pendingDelete.length === 1 ? '' : 's'}?</h2>
-            <p id="delete-history-description">This permanently removes the selected report files from local history. Download any report you want to keep before deleting it.</p>
-            {allItems.some((item) => item.status === 'running') && <p className="hint">Checks still in progress are excluded and cannot be deleted.</p>}
+            <div className="modal-icon"><Trash2 size={22} aria-hidden="true" /></div>
+            <h2 id="delete-history-title">{pendingDelete.type === 'all' ? `Delete all ${pendingDelete.total.toLocaleString()} reports?` : `Delete ${pendingDelete.items.length} selected report${pendingDelete.items.length === 1 ? '' : 's'}?`}</h2>
+            <p id="delete-history-description">This removes report files from local history. Download any report you want to keep first. Active checks are kept. Large deletions continue in the background and can safely resume after LinkSunder restarts.</p>
+            {pendingDelete.type === 'all' && !indexReady && <p className="hint">Wait until history indexing finishes so every existing report is included.</p>}
             <div className="buttons">
               <button ref={cancelButton} className="secondary" onClick={() => setPendingDelete(null)} disabled={busy}>Cancel</button>
-              <button className="danger-button" onClick={() => void deleteSelected(pendingDelete)} disabled={busy}>{busy ? 'Deleting…' : 'Delete reports'}</button>
+              <button className="danger-button" onClick={() => void confirmDeletion()} disabled={busy || (pendingDelete.type === 'all' && !indexReady)}>{busy ? 'Preparing…' : pendingDelete.type === 'all' ? 'Delete all reports' : 'Delete reports'}</button>
             </div>
           </section>
         </div>

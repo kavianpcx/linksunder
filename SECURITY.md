@@ -30,3 +30,7 @@ For a suspected vulnerability, use
 [GitHub's private vulnerability reporting form](https://github.com/kavianpcx/linksunder/security/advisories/new).
 Do not put exploit details, secrets, or private reports in a public issue. No
 response-time or bounty commitments are made.
+
+The v0.4.0 branch's focused security review, including current production and
+development dependency audit status, is recorded in
+[docs/security-review-v0.4.0.md](docs/security-review-v0.4.0.md).

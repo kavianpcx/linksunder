@@ -4,12 +4,16 @@ const fs = require('node:fs');
 const { URL } = require('node:url');
 const { setTimeout, clearTimeout } = require('node:timers');
 const net = require('node:net');
+const { autoUpdater } = require('electron-updater');
+const { CancellationToken } = require('builder-util-runtime');
+const { UpdateController } = require('./update-controller.cjs');
 
 let engine;
 let window;
 let origin = '';
 let shuttingDown = false;
 let engineExited = false;
+let updateController;
 app.setName('LinkSunder');
 if (process.env.LINKSUNDER_DESKTOP_DATA)
   app.setPath('userData', process.env.LINKSUNDER_DESKTOP_DATA);
@@ -114,6 +118,7 @@ async function start() {
     },
   });
   registerWindowIpc();
+  createUpdateController();
   window.on('maximize', () => window?.webContents.send('linksunder:window-state', true));
   window.on('unmaximize', () => window?.webContents.send('linksunder:window-state', false));
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -130,6 +135,62 @@ async function start() {
   });
   window.once('ready-to-show', () => window.show());
   await window.loadURL(origin);
+}
+
+function updateSupport() {
+  if (!app.isPackaged) return { supported: false, reason: 'In-app updates are available in supported installed desktop packages.' };
+  if (process.platform === 'win32') {
+    const installDirectory = path.dirname(app.getPath('exe'));
+    const uninstaller = path.join(installDirectory, 'Uninstall LinkSunder.exe');
+    return fs.existsSync(uninstaller)
+      ? { supported: true, reason: 'Windows NSIS installer.' }
+      : { supported: false, reason: 'This Windows portable ZIP must be updated manually from the official releases page.' };
+  }
+  if (process.platform === 'linux' && process.env.APPIMAGE)
+    return { supported: true, reason: 'Linux AppImage.' };
+  if (process.platform === 'linux')
+    return { supported: false, reason: 'Linux DEB packages are updated manually through the system package installer to preserve its permission and signature protections.' };
+  return { supported: false, reason: 'This package uses manual updates from the official releases page.' };
+}
+
+function createUpdateController() {
+  const support = updateSupport();
+  updateController = new UpdateController({
+    updater: autoUpdater,
+    tokenFactory: () => new CancellationToken(),
+    initialState: {
+      currentVersion: app.getVersion(),
+      supported: support.supported,
+      supportReason: support.reason,
+      status: support.supported ? 'idle' : 'unsupported',
+      message: support.supported ? 'Check for updates when you are ready. LinkSunder does not check automatically.' : support.reason,
+    },
+    publish: (state) => {
+      if (window && !window.isDestroyed()) window.webContents.send('linksunder:update-state', state);
+    },
+    getOperations: async () => {
+      try {
+        const response = await globalThis.fetch(`${origin}/api/operations`);
+        if (!response.ok) return { busy: true, message: 'LinkSunder could not confirm that reports are idle. Close any active work before installing.' };
+        return await response.json();
+      } catch {
+        return { busy: true, message: 'LinkSunder could not confirm that reports are idle. Close any active work before installing.' };
+      }
+    },
+    confirmInstall: async () => {
+      const result = await dialog.showMessageBox(window, {
+        type: 'warning',
+        title: 'Restart to install LinkSunder update',
+        message: 'Restart LinkSunder and install the downloaded update?',
+        detail: 'Saved reports, preferences, and scenarios remain on this computer. Any unsaved edits in the current window will be lost.',
+        buttons: ['Install later', 'Restart & install'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return result.response === 1;
+    },
+  });
 }
 
 function isTrustedWindow(event) {
@@ -163,6 +224,36 @@ function registerWindowIpc() {
     const error = await shell.openPath(directory);
     return error ? { ok: false, error } : { ok: true };
   });
+  ipcMain.handle('linksunder:choose-geolocation-database', async (event, kind) => {
+    if (!isTrustedWindow(event) || !['city', 'asn'].includes(kind)) return undefined;
+    const result = await dialog.showOpenDialog(window, {
+      title: `Choose a MaxMind ${kind === 'city' ? 'City' : 'ASN'} database`,
+      properties: ['openFile'],
+      filters: [{ name: 'MaxMind database', extensions: ['mmdb'] }],
+    });
+    return result.canceled ? undefined : result.filePaths[0];
+  });
+  ipcMain.handle('linksunder:open-geolocation-signup', (event) => {
+    if (isTrustedWindow(event)) void shell.openExternal('https://www.maxmind.com/en/geolite2/signup');
+  });
+  ipcMain.handle('linksunder:open-release-page', (event) => {
+    if (isTrustedWindow(event)) void shell.openExternal('https://github.com/kavianpcx/linksunder/releases');
+  });
+  ipcMain.handle('linksunder:update-state', (event) =>
+    isTrustedWindow(event) ? updateController?.getState() : undefined,
+  );
+  ipcMain.handle('linksunder:check-updates', async (event) =>
+    isTrustedWindow(event) ? updateController?.check() : undefined,
+  );
+  ipcMain.handle('linksunder:download-update', async (event) =>
+    isTrustedWindow(event) ? updateController?.download() : undefined,
+  );
+  ipcMain.handle('linksunder:cancel-update-download', (event) =>
+    isTrustedWindow(event) ? updateController?.cancelDownload() : false,
+  );
+  ipcMain.handle('linksunder:install-update', async (event) =>
+    isTrustedWindow(event) ? updateController?.install() : false,
+  );
   ipcMain.handle('linksunder:is-maximized', (event) =>
     isTrustedWindow(event) ? window.isMaximized() : false,
   );
@@ -182,6 +273,7 @@ function registerWindowIpc() {
 
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', (event) => {
+  updateController?.cancelDownload();
   if (!engine || engineExited || shuttingDown) return;
   event.preventDefault();
   shuttingDown = true;
