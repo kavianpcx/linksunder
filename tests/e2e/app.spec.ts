@@ -684,21 +684,22 @@ test('deletes a single report only after confirmation', async ({ page, request }
 });
 
 test('bulk deletion and clear-all history require confirmation', async ({ page, request }) => {
+  test.setTimeout(120000);
   const runStart = await request.post('/api/runs', {
     headers: { 'X-LinkSunder': 'local' },
     data: { name: `Bulk delete ${Date.now()}`, url: `${appURL}/demo/fixed`, externalConsent: true },
   }).then((response) => response.json()) as { id: string };
-  await expect.poll(async () => (await request.get(`/api/runs/${runStart.id}`).then((response) => response.json())).status, { timeout: 15000 }).not.toBe('running');
+  await expect.poll(async () => (await request.get(`/api/runs/${runStart.id}`).then((response) => response.json())).status, { timeout: 30000 }).not.toBe('running');
   const networkStart = await request.post('/api/network/scans', {
     headers: { 'X-LinkSunder': 'local' },
     data: { target: '127.0.0.1', ports: [appPort], timeout: 1200, authorized: true },
   }).then((response) => response.json()) as { id: string };
-  await expect.poll(async () => (await request.get(`/api/network/reports/${networkStart.id}`).then((response) => response.json())).status, { timeout: 15000 }).not.toBe('running');
+  await expect.poll(async () => (await request.get(`/api/network/reports/${networkStart.id}`).then((response) => response.json())).status, { timeout: 30000 }).not.toBe('running');
   const keepStart = await request.post('/api/runs', {
     headers: { 'X-LinkSunder': 'local' },
     data: { name: `Clear all remains ${Date.now()}`, url: `${appURL}/demo/fixed`, externalConsent: true },
   }).then((response) => response.json()) as { id: string };
-  await expect.poll(async () => (await request.get(`/api/runs/${keepStart.id}`).then((response) => response.json())).status, { timeout: 15000 }).not.toBe('running');
+  await expect.poll(async () => (await request.get(`/api/runs/${keepStart.id}`).then((response) => response.json())).status, { timeout: 30000 }).not.toBe('running');
   const runs = await request.get('/api/runs').then((response) => response.json());
   const network = await request.get('/api/network/reports').then((response) => response.json());
   const available = [

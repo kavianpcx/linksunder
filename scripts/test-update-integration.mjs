@@ -5,7 +5,6 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { AbortSignal } from 'node:abort_controller';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -88,7 +87,7 @@ function runProcess(executable, args, options = {}) {
 async function downloadOldRelease() {
   phase(`download published v${oldVersion} package`);
   const response = await fetch(`https://github.com/kavianpcx/linksunder/releases/download/v${oldVersion}/${oldAssetName}`, {
-    signal: AbortSignal.timeout(180000),
+    signal: globalThis.AbortSignal.timeout(180000),
   });
   if (!response.ok || !response.body) throw new Error(`Could not download the published ${oldVersion} test package (${response.status}).`);
   await pipeline(Readable.fromWeb(response.body), createWriteStream(oldAssetPath));
