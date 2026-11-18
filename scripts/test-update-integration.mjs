@@ -331,7 +331,8 @@ try {
   });
   phase('install the verified update and wait for v0.4.0 to close');
   const oldAppClosed = oldApp.waitForEvent('close', { timeout: 240000 });
-  await page.getByRole('button', { name: 'Restart & Install', exact: true }).click();
+  const installStarted = await withTimeout('request the verified update installation', page.evaluate(() => window.linksunderDesktop.installUpdate()), 30000);
+  assert.equal(installStarted, true, `The verified updater declined to start installation: ${JSON.stringify(await updateState(page))}`);
   await oldAppClosed;
   const updated = await connectToUpdatedApp(debugPort);
   updatedBrowser = updated.browser;
