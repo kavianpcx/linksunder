@@ -329,30 +329,19 @@ try {
   await oldApp.evaluate(({ dialog }) => {
     dialog.showMessageBox = async () => ({ response: 1 });
   });
-  await oldApp.evaluate(({ app }) => {
-    const diagnostics = globalThis.__linksunderQuitDiagnostics = [];
-    app.on('before-quit', () => diagnostics.push('before-quit'));
-    app.on('will-quit', () => diagnostics.push('will-quit'));
-    for (const method of ['quit', 'exit']) {
-      const original = app[method].bind(app);
-      app[method] = (...args) => {
-        diagnostics.push(`${method}(${args.join(',')})`);
-        return original(...args);
-      };
-    }
+  // Playwright's Electron launcher keeps a Node inspector session attached to the main process.
+  // Detach it shortly before quit so the debugger cannot hold the updater's exit open.
+  await oldApp.evaluate(() => {
+    setTimeout(() => require('node:inspector').close(), 500);
   });
   phase('install the verified update and wait for v0.4.0 to close');
+  const oldAppClosed = oldApp.waitForEvent('close', { timeout: 30000 });
   const installStarted = await withTimeout('request the verified update installation', page.evaluate(() => window.linksunderDesktop.installUpdate()), 30000);
   if (installStarted !== true) {
     const state = await updateState(page).catch((error) => ({ message: error.message }));
     assert.fail(`The verified updater declined to start installation: ${JSON.stringify(state)}`);
   }
-  try {
-    await oldApp.waitForEvent('close', { timeout: 20000 });
-  } catch (error) {
-    const diagnostics = await oldApp.evaluate(() => globalThis.__linksunderQuitDiagnostics).catch((evaluationError) => ({ error: evaluationError.message }));
-    assert.fail(`The old app did not exit after installation started: ${JSON.stringify(diagnostics)}; ${error.message}`);
-  }
+  await oldAppClosed;
   const updated = await connectToUpdatedApp(debugPort);
   updatedBrowser = updated.browser;
   updatedPage = updated.page;
