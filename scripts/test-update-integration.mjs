@@ -142,9 +142,11 @@ function evaluateMain(inspectorUrl, expression) {
       if (message.id !== 1) return;
       clearTimeout(timer);
       socket.close();
-      if (message.error || message.result?.exceptionDetails)
-        reject(new Error(message.error?.message || message.result.exceptionDetails.text));
-      else resolve(message.result?.result?.value);
+      if (message.error || message.result?.exceptionDetails) {
+        const details = message.result?.exceptionDetails;
+        const description = details?.exception?.description || details?.text || 'The app inspector evaluation failed.';
+        reject(new Error(message.error?.message || description));
+      } else resolve(message.result?.result?.value);
     });
     socket.addEventListener('error', () => {
       clearTimeout(timer);
@@ -399,7 +401,9 @@ try {
   assert.equal(feed.requests[1].rangeStart, 0, 'A cancelled partial package must be discarded; retry must start at byte zero.');
 
   const confirmationExpression = [
-    "const { app, dialog } = require('electron');",
+    "const path = process.getBuiltinModule('node:path');",
+    "const moduleApi = process.getBuiltinModule('node:module');",
+    "const { app, dialog } = moduleApi.createRequire(path.join(process.resourcesPath, 'app.asar', 'desktop', 'main.cjs'))('electron');",
     "const fs = process.getBuiltinModule('node:fs');",
     "const record = (event) => fs.appendFileSync(process.env.LINKSUNDER_UPDATE_TEST_QUIT_LOG, event + String.fromCharCode(10));",
     "app.on('before-quit', () => record('before-quit'));",
@@ -449,7 +453,11 @@ try {
   phase('bounded isolated test cleanup');
   await withTimeout('close the updated application', stopUpdatedApp(), 15000).catch((error) => console.warn(error.message));
   if (oldBrowser) await withTimeout('disconnect the previous app window', oldBrowser.close(), 10000).catch(() => {});
-  if (oldProcess && oldProcess.exitCode === null && oldProcess.signalCode === null) oldProcess.kill();
+  if (oldProcess && oldProcess.exitCode === null && oldProcess.signalCode === null) {
+    const oldProcessExit = new Promise((resolve) => oldProcess.once('exit', resolve));
+    oldProcess.kill();
+    await withTimeout('stop the previous app after failure', oldProcessExit, 10000).catch(() => {});
+  }
   if (windowsUninstaller) await runProcess(windowsUninstaller, ['/S'], { timeout: 60000 }).catch(() => {});
   if (server?.listening) {
     server.closeAllConnections();
