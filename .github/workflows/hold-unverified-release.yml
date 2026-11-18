@@ -2,7 +2,7 @@ name: Hold unverified v0.5.0 release
 on:
   pull_request:
     branches: [main]
-    types: [opened]
+    types: [opened, synchronize]
 permissions:
   contents: write
 jobs:
@@ -18,7 +18,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          release_id=$(gh api "repos/$GH_REPO/releases/tags/v0.5.0" --jq '.id')
-          gh api -X PATCH "repos/$GH_REPO/releases/$release_id" -F draft=true >/dev/null
+          release_id=$(gh api "repos/$GH_REPO/releases?per_page=100" --jq '[.[] | select(.tag_name == "v0.5.0")][0].id // empty')
+          [[ -n "$release_id" ]]
+          is_draft=$(gh api "repos/$GH_REPO/releases/$release_id" --jq '.draft')
+          if [[ "$is_draft" != true ]]; then
+            gh api -X PATCH "repos/$GH_REPO/releases/$release_id" -F draft=true >/dev/null
+          fi
           gh api "repos/$GH_REPO/releases/$release_id" --jq '.draft' | grep -qx true
 
