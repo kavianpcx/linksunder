@@ -70,7 +70,7 @@ describe('desktop update workflow', () => {
     expect(controller.cancelDownload()).toBe(true);
     await download;
     expect(token.cancelled).toBe(true);
-    expect(controller.getState().status).toBe('cancelled');
+    expect(controller.getState()).toMatchObject({ status: 'cancelled', message: expect.stringContaining('partial file is discarded') });
   });
 
   it('blocks installation during active work and asks before restart', async () => {

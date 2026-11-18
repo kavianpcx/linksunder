@@ -762,12 +762,15 @@ td small {
   border: 1px solid #42846a;
 }
 .badge.fail,
-.badge.error {
+.badge.error,
+.badge.fault-not-triggered {
   background: #663d4538;
   color: #ffb4b4;
   border: 1px solid #9c626b;
 }
-.badge.warn {
+.badge.warn,
+.badge.not-tested,
+.badge.observed {
   background: #6d512826;
   color: #ead18e;
   border: 1px solid #8a7444;
@@ -792,6 +795,27 @@ td small {
   margin-top: 12px;
   font-size: 23px;
   font-weight: 550;
+}
+.resilience-evidence dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.resilience-evidence dl > div {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 12px;
+  min-width: 0;
+}
+.resilience-evidence dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.resilience-evidence dd {
+  margin: 6px 0 0;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 .timeline {
   display: flex;
@@ -872,7 +896,7 @@ dd {
 [data-theme='light'] .badge.pass {
   color: #166646;
 }
-[data-theme='light'] .badge:not(.pass, .fail, .error, .warn) {
+[data-theme='light'] .badge:not(.pass, .fail, .error, .warn, .not-tested, .observed, .fault-not-triggered) {
   background: #eceaf4;
   color: #4c4562;
   border: 1px solid #d5d1e1;
@@ -884,10 +908,13 @@ dd {
   color: #41365b;
 }
 [data-theme='light'] .badge.fail,
-[data-theme='light'] .badge.error {
+[data-theme='light'] .badge.error,
+[data-theme='light'] .badge.fault-not-triggered {
   color: #9a2634;
 }
-[data-theme='light'] .badge.warn {
+[data-theme='light'] .badge.warn,
+[data-theme='light'] .badge.not-tested,
+[data-theme='light'] .badge.observed {
   color: #74560c;
   background: #f3ead3;
   border-color: #d4bd7f;
@@ -2079,3 +2106,36 @@ dd {
   .window-controls button { width: 42px; }
   .content { padding-top: 23px; }
 }
+.api-test-result .panel-head h2 { margin: 0; }
+.api-phases {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+.api-phases article {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--panel);
+}
+.api-phases h3 { margin: 0 0 10px; }
+.api-phases strong, .api-phases p { overflow-wrap: anywhere; }
+.response-preview {
+  max-height: 300px;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.api-assertion-list { display: grid; gap: 8px; padding-left: 22px; }
+.api-assertion-list li { padding-left: 4px; }
+.api-assertion-list .badge { margin-right: 8px; }
+.dns-settings { padding: 14px 0; border-top: 1px solid var(--line); }
+.dns-settings > summary { cursor: pointer; color: var(--text); font-weight: 600; }

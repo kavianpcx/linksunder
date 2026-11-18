@@ -28,6 +28,8 @@ it.each(['fail', 'delay'] as const)('injects %s into actual requests', async (ac
     name: action,
     url: base + '/demo/fixed',
     steps: [
+      { action: 'click', selector: '#send' },
+      { action: 'check', selector: '#status[data-state="success"]' },
       { action: 'fill', selector: '#note', value: 'Draft' },
       { action, path: '/demo/api/messages', delay: 350 },
       { action: 'click', selector: '#send' },
@@ -37,19 +39,26 @@ it.each(['fail', 'delay'] as const)('injects %s into actual requests', async (ac
           action === 'fail' ? '#status[data-state="error"]' : '#status[data-state="success"]',
       },
       ...(action === 'fail' ? [{ action: 'value', selector: '#note', value: 'Draft' }] : []),
+      { action: 'online' },
+      { action: 'click', selector: '#send' },
+      { action: 'check', selector: '#status[data-state="success"]' },
     ],
   });
   const r = newRun(s);
   await execute(s, r, new AbortController().signal);
   expect(r.status).toBe('pass');
-  expect(r.network.injected).toBe(1);
+  expect(r.network.injected).toBeGreaterThan(0);
+  expect(r.resilience?.baselineRequests).toBeGreaterThan(0);
+  expect(r.resilience?.triggeredRequests).toBeGreaterThan(0);
+  expect(r.resilience?.recoveryRequests).toBeGreaterThan(0);
+  expect(r.resilience?.recoveryAssertions).toBeGreaterThan(0);
   if (action === 'delay') expect(r.duration).toBeGreaterThan(350);
 });
 it('never passes a quick scan without assertions', async () => {
   const s = scenarioSchema.parse({ name: 'Observe', url: base + '/demo/fixed' });
   const r = newRun(s);
   await execute(s, r, new AbortController().signal);
-  expect(r.status).toBe('observed');
+  expect(r.status).toBe('not-tested');
   expect(r.assertions).toBe(0);
 });
 it('cancels a browser during a pending step', async () => {

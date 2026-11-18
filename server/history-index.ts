@@ -39,7 +39,7 @@ interface PendingIndexFile {
 const UUID = '[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}';
 const RUN_FILE = new RegExp(`^(${UUID})\\.json$`, 'i');
 const NETWORK_FILE = new RegExp(`^network-(${UUID})\\.json$`, 'i');
-const RUN_STATUSES = new Set(['running', 'pass', 'fail', 'observed', 'error', 'cancelled']);
+const RUN_STATUSES = new Set(['running', 'pass', 'fail', 'observed', 'error', 'cancelled', 'not-tested', 'fault-not-triggered']);
 const NETWORK_STATUSES = new Set(['running', 'complete', 'cancelled', 'error']);
 const INDEX_SCHEMA = `
   CREATE TABLE IF NOT EXISTS reports (

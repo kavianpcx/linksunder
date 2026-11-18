@@ -43,6 +43,7 @@ import { formatRunTimestamp } from './format-run-timestamp';
 import { api } from './api';
 import { HistoryPage } from './HistoryPage';
 import { NetworkInspector } from './NetworkInspector';
+import { ApiTestBuilder } from './ApiTestBuilder';
 import { SelectField } from './SelectField';
 import { NumberField } from './NumberField';
 import type { GeolocationDatabaseInfo, NetworkReport } from '../shared/network';
@@ -63,6 +64,16 @@ const labels: Record<string, string> = {
   value: 'Check Field Value',
   screenshot: 'Take Screenshot',
 };
+const statusLabel = (status: string) => ({
+  running: 'RUNNING',
+  pass: 'PASS',
+  fail: 'FAIL',
+  error: 'ERROR',
+  cancelled: 'CANCELLED',
+  observed: 'OBSERVED',
+  'not-tested': 'NOT TESTED',
+  'fault-not-triggered': 'FAULT NOT TRIGGERED',
+}[status] || status);
 const actionOptions = actions.map((action) => ({ value: action, label: labels[action] }));
 const testTypeOptions = [
   { value: 'offline', label: 'Offline Recovery' },
@@ -510,6 +521,12 @@ function App() {
             <FlaskConical size={17} /> New test
           </button>
           <button
+            className={view === 'api-test' ? 'nav active' : 'nav'}
+            onClick={() => setView('api-test')}
+          >
+            <Activity size={17} /> API Test Builder
+          </button>
+          <button
             className={view === 'history' ? 'nav active' : 'nav'}
             onClick={() => setView('history')}
           >
@@ -550,6 +567,8 @@ function App() {
               ? 'Overview'
               : view === 'create'
                 ? 'New test'
+                : view === 'api-test'
+                  ? 'API Test Builder'
                 : view === 'settings'
                   ? 'Settings'
                 : view === 'history'
@@ -695,7 +714,7 @@ function App() {
                               <small>{r.target || 'Resilience test'}</small>
                             </td>
                             <td>
-                              <span className={'badge ' + r.status}>{r.status}</span>
+                              <span className={'badge ' + r.status}>{statusLabel(r.status)}</span>
                             </td>
                             <td>
                               {r.passed} / {r.assertions}
@@ -823,8 +842,8 @@ function App() {
                     Confirm that you own or have permission to test this target before starting.
                   </p>
                   <p className="hint">
-                    No steps? Quick Scan records observations only. Add Check Element or Check Field
-                    Value to earn a PASS or FAIL.
+                    No steps? Quick Scan returns NOT TESTED. Add a baseline action, a disruption,
+                    an action that sends a request, an expectation, and a recovery check.
                   </p>
                 </section>
                 <section className="panel form">
@@ -1043,7 +1062,7 @@ function App() {
                       : 'Evidence from a real browser session.'}
                   </p>
                 </div>
-                <span className={'badge ' + selected.status}>{selected.status}</span>
+                <span className={'badge ' + selected.status}>{statusLabel(selected.status)}</span>
               </div>
               <div className="resultsummary panel">
                 <div>
@@ -1065,6 +1084,20 @@ function App() {
               </div>
               {selected.error && <div className="alert">{selected.error}</div>}
               {selected.advice && <p className="advice">{selected.advice}</p>}
+              {selected.resilience && (
+                <section className="panel form resilience-evidence" aria-label="Resilience test evidence">
+                  <h2>Resilience evidence</h2>
+                  <dl>
+                    <div><dt>Disruption</dt><dd>{selected.resilience.fault === 'none' ? 'Not configured' : selected.resilience.fault}</dd></div>
+                    <div><dt>Baseline requests</dt><dd>{selected.resilience.baselineRequests}</dd></div>
+                    <div><dt>Requests affected</dt><dd>{selected.resilience.triggeredRequests}</dd></div>
+                    <div><dt>Recovery requests</dt><dd>{selected.resilience.recoveryRequests}</dd></div>
+                    <div><dt>Assertions during disruption</dt><dd>{selected.resilience.disruptionAssertions}</dd></div>
+                    <div><dt>Assertions after recovery</dt><dd>{selected.resilience.recoveryAssertions}</dd></div>
+                    {selected.resilience.observedDelayMs !== undefined && <div><dt>Observed added delay</dt><dd>{selected.resilience.observedDelayMs} ms</dd></div>}
+                  </dl>
+                </section>
+              )}
               {selected.status === 'observed' && (
                 <p className="advice">
                   No assertions were configured. These observations do not establish site health.
@@ -1140,6 +1173,7 @@ function App() {
               onRefresh={refreshHistory}
             />
           )}
+          {view === 'api-test' && <ApiTestBuilder />}
           {view === 'network' && (
             <NetworkInspector
               initialReport={selectedNetwork}
@@ -1204,6 +1238,7 @@ function App() {
                 <div className="panel-head"><div><h2>Software updates</h2><p className="hint">LinkSunder checks only when you choose Check for Updates. It never downloads or installs in the background.</p></div><span className={`badge ${updateState?.status === 'current' ? 'pass' : ''}`}>{updateState?.status === 'ready' ? 'Update ready' : updateState?.status === 'downloading' ? 'Downloading' : updateState?.status === 'checking' ? 'Checking' : updateState?.status === 'unsupported' ? 'Manual update' : updateState?.status === 'available' ? 'Available' : updateState?.status === 'current' ? 'Up to date' : 'Not checked'}</span></div>
                 <div className="update-version-grid"><div><span>Installed version</span><strong>{updateState?.currentVersion || `v${__LINKSUNDER_VERSION__}`}</strong></div><div><span>Latest checked version</span><strong>{updateState?.latestVersion || 'Not checked yet'}</strong></div><div><span>Package update support</span><strong>{updateState?.supportReason || (window.linksunderDesktop ? 'Checking package support…' : 'Use the official release downloads.')}</strong></div><div><span>Last successful check</span><strong>{updateState?.lastChecked ? formatRunTimestamp(updateState.lastChecked) : 'None yet'}</strong></div></div>
                 {updateState?.message && <p role="status" className={updateState.status === 'error' ? 'inline-warning' : 'hint'}>{updateState.message}</p>}
+                {updateState?.supported && <p className="hint">Pause and resume are not supported by the current updater. Cancelling or interrupting a download discards partial data; retry starts from the beginning. Closing LinkSunder never installs an update automatically.</p>}
                 {updateState?.latestVersion && updateState.releaseNotes && <details className="update-notes"><summary>Release notes for {updateState.latestVersion}</summary><pre>{updateState.releaseNotes}</pre></details>}
                 {updateState?.downloadSize !== undefined && <p className="hint">Download size: {formatBytes(updateState.downloadSize)}</p>}
                 <div className="buttons">

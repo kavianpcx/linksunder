@@ -1,8 +1,10 @@
-import { lookup, reverse, resolve4, resolve6, resolveCname, resolveMx, resolveNs } from 'node:dns/promises';
+import { lookup, reverse, resolve4, resolve6, resolveCname, resolveMx, resolveNs, resolveSoa, resolveTxt } from 'node:dns/promises';
 import { connect as connectTcp, isIP } from 'node:net';
 import { connect as connectTls } from 'node:tls';
 import type {
   DnsSummary,
+  DnsRecordDiagnostic,
+  DnsResultStatus,
   HttpCheck,
   NetworkFinding,
   NetworkInspectionRequest,
@@ -12,7 +14,6 @@ import type {
   TlsSummary,
 } from '../shared/network.js';
 
-const DNS_TIMEOUT_MS = 1800;
 const MAX_REDIRECTS = 5;
 const MAX_CONCURRENT_PORTS = 4;
 const SECURITY_HEADERS = [
@@ -26,7 +27,8 @@ const SECURITY_HEADERS = [
 const LIMITATIONS = [
   'Port results show whether a TCP connection was accepted; an open port is not, by itself, a vulnerability.',
   'Timeouts are reported as unknown because a filtered service cannot be distinguished from a slow or unreachable host.',
-  'HTTP checks send HEAD requests only, follow at most five redirects on the same hostname, and never store response bodies or cookie values.',
+  'HTTP checks prefer HEAD and use a one-byte range GET only when HEAD is rejected. Redirects are limited to the same hostname, and response bodies or cookie values are never stored.',
+  'DNS record queries use the configured system resolver. Operating-system address resolution is reported separately; this is not an authoritative DNS trace.',
   'TLS inspection observes the certificate handshake; it does not perform a full cryptographic or vulnerability assessment.',
   'This inspector does not exploit services, authenticate, brute-force, or scan address ranges.',
 ];
@@ -93,75 +95,140 @@ export function normalizeNetworkTarget(raw: string): NormalizedTarget {
   };
 }
 
-function withTimeout<T>(operation: () => Promise<T>, timeoutMs: number, fallback: T, signal?: AbortSignal): Promise<T> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (value: T) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      resolve(value);
-    };
-    const onAbort = () => finish(fallback);
-    const timer = setTimeout(() => finish(fallback), timeoutMs);
-    if (signal?.aborted) {
-      finish(fallback);
-      return;
+function dnsErrorCode(error: unknown) {
+  return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : '';
+}
+
+function dnsErrorStatus(code: string): DnsResultStatus {
+  if (code === 'ENODATA' || code === 'ENORECORD') return 'no-record';
+  if (code === 'ENOTFOUND' || code === 'EAI_NONAME') return 'NXDOMAIN';
+  if (code === 'ETIMEOUT' || code === 'ETIMEDOUT') return 'timeout';
+  if (code === 'ENOTIMP' || code === 'ENOTSUP') return 'unsupported';
+  return 'resolver-failure';
+}
+
+export async function queryDns<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  retries: number,
+  signal: AbortSignal,
+): Promise<{ value?: T; diagnostic: DnsRecordDiagnostic }> {
+  const started = Date.now();
+  let attempts = 0;
+  let finalStatus: DnsResultStatus = 'resolver-failure';
+  let errorMessage: string | undefined;
+  while (attempts <= retries) {
+    if (signal.aborted) {
+      finalStatus = 'cancelled';
+      errorMessage = 'Lookup cancelled.';
+      break;
     }
-    signal?.addEventListener('abort', onAbort, { once: true });
-    Promise.resolve()
-      .then(operation)
-      .then(finish, () => finish(fallback));
-  });
+    attempts += 1;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
+    const result = await Promise.race([
+      Promise.resolve().then(operation).then(
+        (value) => ({ kind: 'value' as const, value }),
+        (error: unknown) => ({ kind: 'error' as const, error }),
+      ),
+      new Promise<{ kind: 'timeout' | 'cancelled' }>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
+        abortListener = () => resolve({ kind: 'cancelled' });
+        signal.addEventListener('abort', abortListener, { once: true });
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (abortListener) signal.removeEventListener('abort', abortListener);
+    if (result.kind === 'value') {
+      const found = Array.isArray(result.value) ? result.value.length > 0 : Boolean(result.value);
+      return {
+        value: result.value,
+        diagnostic: { status: found ? 'found' : 'no-record', durationMs: Date.now() - started, attempts },
+      };
+    }
+    if (result.kind === 'cancelled') {
+      finalStatus = 'cancelled';
+      errorMessage = 'Lookup cancelled.';
+      break;
+    }
+    const code = 'error' in result ? dnsErrorCode(result.error) : '';
+    finalStatus = result.kind === 'timeout' ? 'timeout' : dnsErrorStatus(code);
+    errorMessage = result.kind === 'timeout' ? `Timed out after ${timeoutMs} ms.` : code || 'Resolver did not complete the lookup.';
+    if (!['timeout', 'resolver-failure'].includes(finalStatus) || attempts > retries) break;
+  }
+  return { diagnostic: { status: finalStatus, durationMs: Date.now() - started, attempts, error: errorMessage } };
 }
 
 async function dnsSummary(
   hostname: string,
+  timeoutMs: number,
+  retries: number,
   onProgress: (progress: string) => void,
   signal: AbortSignal,
 ): Promise<DnsSummary> {
   const started = Date.now();
   const ipVersion = isIP(hostname);
   if (ipVersion) {
-    const names = await withTimeout(() => reverse(hostname), DNS_TIMEOUT_MS, [] as string[], signal);
+    const ptr = await queryDns(() => reverse(hostname), timeoutMs, retries, signal);
     return {
-      A: ipVersion === 4 ? [hostname] : [],
-      AAAA: ipVersion === 6 ? [hostname] : [],
+      A: [],
+      AAAA: [],
       CNAME: [],
       NS: [],
       MX: [],
-      reverse: names.length ? [{ address: hostname, names }] : [],
+      TXT: [],
+      reverse: ptr.value?.length ? [{ address: hostname, names: ptr.value }] : [],
+      reverseDiagnostics: [{ address: hostname, result: ptr.diagnostic }],
+      resolvedAddresses: [],
+      systemResolution: { status: 'not-applicable', durationMs: 0, attempts: 0 },
+      inputAddress: hostname,
+      records: Object.fromEntries(['A', 'AAAA', 'CNAME', 'NS', 'MX', 'TXT', 'SOA'].map((key) => [key, { status: 'not-applicable', durationMs: 0, attempts: 0 }])) as DnsSummary['records'],
       lookupTimeMs: Date.now() - started,
-      note: 'The target is an IP address; DNS record queries were not needed.',
+      note: 'The target is an IP address. A/AAAA values above are not fabricated DNS records; the direct input is listed separately. PTR reverse DNS was queried through the configured resolver.',
     };
   }
 
   onProgress('Looking up DNS records…');
-  const [A, AAAA, CNAME, NS, MX, addresses] = await Promise.all([
-    withTimeout(() => resolve4(hostname), DNS_TIMEOUT_MS, [] as string[], signal),
-    withTimeout(() => resolve6(hostname), DNS_TIMEOUT_MS, [] as string[], signal),
-    withTimeout(() => resolveCname(hostname), DNS_TIMEOUT_MS, [] as string[], signal),
-    withTimeout(() => resolveNs(hostname), DNS_TIMEOUT_MS, [] as string[], signal),
-    withTimeout(() => resolveMx(hostname), DNS_TIMEOUT_MS, [] as Array<{ exchange: string; priority: number }>, signal),
-    withTimeout(() => lookup(hostname, { all: true, verbatim: true }), DNS_TIMEOUT_MS, [] as Array<{ address: string; family: number }>, signal),
+  const [a, aaaa, cname, ns, mx, txt, soa, system] = await Promise.all([
+    queryDns(() => resolve4(hostname), timeoutMs, retries, signal),
+    queryDns(() => resolve6(hostname), timeoutMs, retries, signal),
+    queryDns(() => resolveCname(hostname), timeoutMs, retries, signal),
+    queryDns(() => resolveNs(hostname), timeoutMs, retries, signal),
+    queryDns(() => resolveMx(hostname), timeoutMs, retries, signal),
+    queryDns(() => resolveTxt(hostname), timeoutMs, retries, signal),
+    queryDns(() => resolveSoa(hostname), timeoutMs, retries, signal),
+    queryDns(() => lookup(hostname, { all: true, verbatim: true }), timeoutMs, retries, signal),
   ]);
-  const uniqueAddresses = [...new Set([...A, ...AAAA, ...addresses.map((entry) => entry.address)])].slice(0, 16);
-  const reverseResults = await Promise.all(
-    uniqueAddresses.slice(0, 3).map(async (address) => ({
-      address,
-      names: await withTimeout(() => reverse(address), DNS_TIMEOUT_MS, [] as string[], signal),
-    })),
-  );
+  const A = a.value || [];
+  const AAAA = aaaa.value || [];
+  const CNAME = cname.value || [];
+  const NS = ns.value || [];
+  const MX = mx.value || [];
+  const TXT = (txt.value || []).map((parts) => parts.join('')).slice(0, 30);
+  const uniqueAddresses = [...new Set([...(system.value || []).map((entry) => entry.address), ...A, ...AAAA])].slice(0, 16);
+  const reverseDiagnostics = await Promise.all(uniqueAddresses.slice(0, 3).map(async (address) => {
+    const result = await queryDns(() => reverse(address), timeoutMs, retries, signal);
+    return { address, names: result.value || [], result: result.diagnostic };
+  }));
+  const reverseResults = reverseDiagnostics.filter((item) => item.names.length).map(({ address, names }) => ({ address, names }));
+  const SOA = soa.value;
   return {
     A: [...new Set(A)].slice(0, 16),
     AAAA: [...new Set(AAAA)].slice(0, 16),
     CNAME: [...new Set(CNAME)].slice(0, 16),
     NS: [...new Set(NS)].slice(0, 16),
     MX: MX.slice(0, 16).map(({ exchange, priority }) => ({ exchange, priority })),
+    TXT,
+    SOA,
+    records: { A: a.diagnostic, AAAA: aaaa.diagnostic, CNAME: cname.diagnostic, NS: ns.diagnostic, MX: mx.diagnostic, TXT: txt.diagnostic, SOA: soa.diagnostic },
+    resolvedAddresses: (system.value || []).slice(0, 16),
+    systemResolution: system.diagnostic,
     reverse: reverseResults.filter((item) => item.names.length > 0),
+    reverseDiagnostics: reverseDiagnostics.map(({ address, result }) => ({ address, result })),
     lookupTimeMs: Date.now() - started,
-    note: uniqueAddresses.length ? undefined : 'No A or AAAA records were returned by the system DNS resolver.',
+    note: `${uniqueAddresses.length ? 'DNS record queries and operating-system address resolution are shown separately.' : 'The operating system did not resolve this host to an IP address.'} A DNS record status of “no record” means the resolver returned no data for that record type; NXDOMAIN, timeout and resolver failures are separate outcomes. Apex domains commonly do not publish CNAME records, and subdomains may not publish NS records directly. This is not an authoritative DNS trace.`,
   };
 }
 
@@ -273,12 +340,24 @@ async function inspectHttp(
   for (let index = 0; index <= MAX_REDIRECTS; index += 1) {
     try {
       const signalWithTimeout = AbortSignal.any([signal, AbortSignal.timeout(timeout)]);
-      const response = await fetch(current, {
+      let method: 'HEAD' | 'GET' = 'HEAD';
+      let response = await fetch(current, {
         method: 'HEAD',
         redirect: 'manual',
         signal: signalWithTimeout,
         headers: { 'user-agent': 'LinkSunder Network Inspector', accept: '*/*' },
       });
+      if (response.status === 405 || response.status === 501) {
+        await response.body?.cancel();
+        method = 'GET';
+        response = await fetch(current, {
+          method,
+          redirect: 'manual',
+          signal: signalWithTimeout,
+          headers: { 'user-agent': 'LinkSunder Network Inspector', accept: '*/*', range: 'bytes=0-0' },
+        });
+      }
+      check.method = method;
       const location = response.headers.get('location');
       if ([301, 302, 303, 307, 308].includes(response.status) && location) {
         await response.body?.cancel();
@@ -318,11 +397,22 @@ async function inspectHttp(
       await response.body?.cancel();
       break;
     } catch (error) {
+      const cause = typeof error === 'object' && error !== null && 'cause' in error ? error.cause : undefined;
+      const code = typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'string' ? cause.code : '';
+      check.errorCode = signal.aborted ? 'CANCELLED' : error instanceof Error && error.name === 'TimeoutError' ? 'TIMEOUT' : code || undefined;
       check.error = signal.aborted
         ? 'Cancelled.'
         : error instanceof Error && error.name === 'TimeoutError'
           ? `No HTTP response within ${timeout} ms.`
-          : 'The HTTP check could not complete. The endpoint may be unavailable or require a valid TLS certificate.';
+          : code === 'ENOTFOUND' || code === 'EAI_AGAIN'
+            ? `DNS lookup failed (${code}). Check the hostname and resolver.`
+            : code === 'ECONNREFUSED'
+              ? 'The target refused the HTTP connection.'
+              : code === 'CERT_HAS_EXPIRED'
+                ? 'TLS verification failed because the certificate is expired.'
+                : code === 'ERR_TLS_CERT_ALTNAME_INVALID'
+                  ? 'TLS verification failed because the certificate name does not match the target.'
+                  : 'The HTTP check could not complete. The endpoint may be unavailable or require a trusted TLS certificate.';
       break;
     }
   }
@@ -333,6 +423,8 @@ async function inspectHttp(
 function tlsErrorMessage(error: NodeJS.ErrnoException): string {
   if (error.code === 'ETIMEDOUT') return 'TLS handshake timed out.';
   if (error.code === 'ECONNREFUSED') return 'The target refused the TLS connection.';
+  if (error.code === 'CERT_HAS_EXPIRED') return 'TLS certificate verification reports that the certificate is expired.';
+  if (error.code === 'ERR_TLS_CERT_ALTNAME_INVALID') return 'TLS certificate name does not match the target.';
   return 'A TLS certificate could not be read from this port.';
 }
 
@@ -520,7 +612,7 @@ export async function inspectNetworkTarget(
   };
 
   try {
-    report.dns = await dnsSummary(target.hostname, progress, signal);
+    report.dns = await dnsSummary(target.hostname, request.dnsTimeout, request.dnsRetries, progress, signal);
     if (!signal.aborted) {
       report.ports = await inspectPorts(target.hostname, request.ports, request.timeout, signal, progress);
     }

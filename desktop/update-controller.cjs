@@ -13,6 +13,8 @@ function updateDetails(info = {}) {
   };
 }
 
+const CANCELLED_DOWNLOAD_MESSAGE = 'Update download cancelled. The partial file is discarded; retry starts a fresh download.';
+
 class UpdateController {
   constructor({ updater, tokenFactory, publish, getOperations, confirmInstall, initialState }) {
     this.updater = updater;
@@ -52,7 +54,7 @@ class UpdateController {
       this.set({ ...updateDetails(event), status: 'ready', message: 'Update ready. Restart and install when it suits you.', progress: undefined, cancelRequested: false });
     });
     updater.on('update-cancelled', () => {
-      if (this.state.status === 'downloading') this.set({ status: 'cancelled', message: 'Update download cancelled. You can retry when you are ready.', progress: undefined, cancelRequested: false });
+      if (this.state.status === 'downloading') this.set({ status: 'cancelled', message: CANCELLED_DOWNLOAD_MESSAGE, progress: undefined, cancelRequested: false });
     });
     updater.on('error', () => {
       if (this.state.status === 'checking') this.set({ status: 'error', message: 'Could not check or verify the update. Check your connection, then retry.' });
@@ -105,13 +107,13 @@ class UpdateController {
       try {
         const files = await this.updater.downloadUpdate(token);
         if (token.cancelled) {
-          this.set({ status: 'cancelled', message: 'Update download cancelled. You can retry when you are ready.', progress: undefined, cancelRequested: false });
+          this.set({ status: 'cancelled', message: CANCELLED_DOWNLOAD_MESSAGE, progress: undefined, cancelRequested: false });
         } else if (this.state.status === 'downloading' && files?.length) {
           this.token = undefined;
           this.set({ status: 'ready', message: 'Update ready. Restart and install when it suits you.', progress: undefined, cancelRequested: false });
         }
       } catch {
-        this.set({ status: token.cancelled ? 'cancelled' : 'error', message: token.cancelled ? 'Update download cancelled. You can retry when you are ready.' : 'The update download failed verification or was interrupted. Your current LinkSunder version is still available.', progress: undefined, cancelRequested: false });
+        this.set({ status: token.cancelled ? 'cancelled' : 'error', message: token.cancelled ? CANCELLED_DOWNLOAD_MESSAGE : 'The update download failed verification or was interrupted. Your current LinkSunder version is still available. Retry starts the download again.', progress: undefined, cancelRequested: false });
       } finally {
         this.token = undefined;
         this.downloadPromise = undefined;
