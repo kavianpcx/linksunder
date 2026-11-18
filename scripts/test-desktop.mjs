@@ -84,8 +84,10 @@ try {
   assert.equal(runs[0].assertions, 1);
   assert.equal(runs[0].passed, 1);
   const closed = page.waitForEvent('close');
-  await page.getByRole('button', { name: 'Close window' }).click();
-  await closed;
+  await Promise.all([
+    page.getByRole('button', { name: 'Close window' }).click().catch(() => {}),
+    closed,
+  ]);
   await app.close().catch(() => {});
   await new Promise((resolve) => setTimeout(resolve, 1200));
   await assert.rejects(fetch(origin + '/api/runs'), 'Closing the app must stop its local server');
@@ -101,3 +103,4 @@ try {
     assert.fail('Unexpected test directory');
   await rm(data, { recursive: true, force: true });
 }
+
