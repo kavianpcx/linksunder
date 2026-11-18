@@ -14,7 +14,28 @@ let origin = '';
 let shuttingDown = false;
 let engineExited = false;
 let updateController;
+function recordUpdateTestStartup(event, details = {}) {
+  const logPath = process.env.LINKSUNDER_UPDATE_TEST_START_LOG;
+  if (process.env.CI !== 'true' || !logPath) return;
+  try {
+    fs.appendFileSync(logPath, JSON.stringify({
+      event,
+      version: app.getVersion(),
+      pid: process.pid,
+      executable: process.execPath,
+      appImage: process.env.APPIMAGE,
+      appDir: process.env.APPDIR,
+      debugPort: process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT,
+      args: process.argv,
+      ...details,
+    }) + '\\n');
+  } catch {
+    /* Diagnostics are optional and enabled only by the isolated updater integration test. */
+  }
+}
+
 app.setName('LinkSunder');
+recordUpdateTestStartup('startup');
 if (process.env.CI === 'true' && process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT) {
   const port = Number(process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT);
   if (Number.isInteger(port) && port > 0 && port < 65536) {
@@ -29,7 +50,9 @@ if (process.platform === 'linux') {
     process.env.APPIMAGE = updatedPath;
   });
 }
-if (!app.requestSingleInstanceLock()) app.quit();
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+recordUpdateTestStartup('single-instance-lock', { acquired: hasSingleInstanceLock });
+if (!hasSingleInstanceLock) app.quit();
 else {
   app.on('second-instance', () => {
     if (window?.isMinimized()) window.restore();
@@ -37,8 +60,12 @@ else {
   });
   app
     .whenReady()
-    .then(start)
-    .catch(() => {
+    .then(async () => {
+      await start();
+      recordUpdateTestStartup('ready');
+    })
+    .catch((error) => {
+      recordUpdateTestStartup('startup-error', { message: error?.message || String(error) });
       dialog.showErrorBox(
         'LinkSunder could not start',
         'The local test engine could not start. Close LinkSunder and try again. If the problem continues, reinstall the application. Your saved reports will be kept.',
