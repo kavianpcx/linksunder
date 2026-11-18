@@ -2049,6 +2049,38 @@ dd {
   margin: 4px 0 0;
   font-size: 11px;
 }
+.test-type-help { margin: 12px 0 18px; line-height: 1.6; }
+.guided-prompt {
+  margin: 14px 0 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: var(--input);
+}
+.guided-prompt > strong { font-size: 13px; }
+.guided-prompt > p { margin: 8px 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.guided-prompt .permission-hint { margin: 9px 0 12px; }
+.guided-setup { border-color: var(--accent); }
+.guided-setup small { display: block; margin-top: 7px; color: var(--muted); line-height: 1.5; }
+.guided-setup > .hint { line-height: 1.6; }
+.health-evidence dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+.health-evidence dl > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.health-evidence dt { margin: 0; color: var(--muted); font-size: 11px; }
+.health-evidence dd { margin: 6px 0 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.health-check-list .timeline { padding-block: 12px; }
+.health-evidence li { overflow-wrap: anywhere; font-size: 12px; }
+.health-evidence h3 { margin: 20px 0 8px; font-size: 13px; }
 
 [data-theme='light'] .window-controls .window-close:hover { color: white; }
 [data-theme='light'] .severity-info { color: #4d4286; background: #ece8ff; }

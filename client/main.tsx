@@ -34,6 +34,7 @@ import {
 import {
   actions,
   MAX_SCENARIO_STEPS,
+  scenarioDraftSchema,
   scenarioSchema,
   type Scenario,
   type Step,
@@ -63,6 +64,7 @@ const labels: Record<string, string> = {
   check: 'Check Element',
   value: 'Check Field Value',
   screenshot: 'Take Screenshot',
+  'health-check': 'Health check',
 };
 const statusLabel = (status: string) => ({
   running: 'RUNNING',
@@ -75,11 +77,25 @@ const statusLabel = (status: string) => ({
   'fault-not-triggered': 'FAULT NOT TRIGGERED',
 }[status] || status);
 const actionOptions = actions.map((action) => ({ value: action, label: labels[action] }));
+const locatorOptions = [
+  { value: 'css', label: 'CSS selector' },
+  { value: 'button', label: 'Button name' },
+  { value: 'link', label: 'Link name' },
+  { value: 'label', label: 'Form field label' },
+  { value: 'text', label: 'Visible text' },
+];
 const testTypeOptions = [
+  { value: 'health', label: 'Basic Website Health Check' },
   { value: 'offline', label: 'Offline Recovery' },
   { value: 'failure', label: 'API Failure' },
   { value: 'slow', label: 'Slow API Response' },
 ];
+const scenarioTypeNames: Record<Scenario['type'], string> = {
+  health: 'Website health check',
+  offline: 'Offline recovery test',
+  failure: 'API failure test',
+  slow: 'Slow API response test',
+};
 const appearanceOptions = [
   { value: 'dark', label: 'Dark' },
   { value: 'light', label: 'Light' },
@@ -97,12 +113,51 @@ function formatBytes(value?: number) {
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 const initial = () =>
-  scenarioSchema.parse({
-    name: 'Untitled resilience test',
-    url: window.location.origin + '/demo/fixed',
+  scenarioDraftSchema.parse({
+    name: 'Website health check',
+    url: '',
+    type: 'health',
     timeout: Number(localStorage.getItem('timeout') || 10000),
     screenshots: localStorage.getItem('defaultScreenshots') === 'true',
   });
+
+function resilienceReadiness(scenario: Scenario) {
+  if (scenario.type === 'health')
+    return scenario.steps.length ? 'Basic Website Health Check does not run scenario steps. Choose a resilience test type or remove the steps.' : '';
+  const expectedFault = scenario.type === 'offline' ? 'offline' : scenario.type === 'failure' ? 'fail' : 'delay';
+  const faultIndexes = scenario.steps.flatMap((step, index) => ['offline', 'fail', 'delay'].includes(step.action) ? [index] : []);
+  if (faultIndexes.length !== 1) return `Add exactly one ${scenario.type === 'offline' ? 'Go Offline' : scenario.type === 'failure' ? 'Fail API Request' : 'Delay API Response'} step, or use Guided setup.`;
+  const faultIndex = faultIndexes[0];
+  if (scenario.steps[faultIndex].action !== expectedFault)
+    return 'The selected test type does not match the disruption step. Change the type or use Guided setup.';
+  if (expectedFault === 'delay' && scenario.steps[faultIndex].delay <= 0)
+    return 'Choose a delay greater than zero milliseconds to test a slow API response.';
+  if (expectedFault !== 'offline') {
+    const path = scenario.steps[faultIndex].path.trim();
+    if (!path.startsWith('/') || path.includes('?') || path.includes('#'))
+      return 'Enter an API path beginning with /, without a query string or fragment.';
+  }
+  const actionStep = (step: Step) =>
+    step.action === 'open' || (step.action === 'click' && Boolean(step.selector.trim()));
+  const assertionStep = (step: Step) =>
+    (step.action === 'check' && Boolean(step.selector.trim())) ||
+    (step.action === 'value' && Boolean(step.selector.trim()) && Boolean(step.value.trim()));
+  const baselineAction = scenario.steps.findIndex((step, index) => index < faultIndex && actionStep(step));
+  if (baselineAction < 0) return 'Add a baseline action that sends the request before the disruption.';
+  if (!scenario.steps.slice(baselineAction + 1, faultIndex).some(assertionStep))
+    return 'Add a baseline expectation before the disruption.';
+  const onlineIndex = scenario.steps.findIndex((step, index) => index > faultIndex && step.action === 'online');
+  if (onlineIndex < 0) return 'Add a recovery step to restore the normal network behavior.';
+  const disruptionAction = scenario.steps.findIndex((step, index) => index > faultIndex && index < onlineIndex && actionStep(step));
+  if (disruptionAction < 0) return 'Add an action after the disruption to trigger a real request.';
+  if (!scenario.steps.slice(disruptionAction + 1, onlineIndex).some(assertionStep))
+    return 'Add an expectation for the application behavior during the disruption.';
+  const recoveryAction = scenario.steps.findIndex((step, index) => index > onlineIndex && actionStep(step));
+  if (recoveryAction < 0) return 'Add an action after recovery to verify that the request works again.';
+  if (!scenario.steps.slice(recoveryAction + 1).some(assertionStep))
+    return 'Add an expectation for the recovered application behavior.';
+  return '';
+}
 function App() {
   const [view, setView] = useState('dashboard');
   const [historySummary, setHistorySummary] = useState<HistorySummary>({
@@ -112,6 +167,19 @@ function App() {
   const [selected, setSelected] = useState<Run>();
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkReport>();
   const [scenario, setScenario] = useState<Scenario>(initial);
+  const [guidedSetupOpen, setGuidedSetupOpen] = useState(false);
+  const [guided, setGuided] = useState({
+    triggerKind: 'button' as 'button' | 'link',
+    triggerLabel: '',
+    fieldLabel: '',
+    fieldValue: '',
+    apiPath: '',
+    delayMs: 1000,
+    baselineText: '',
+    disruptionText: '',
+    recoveryText: '',
+    preserveField: true,
+  });
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
@@ -483,7 +551,71 @@ function App() {
     [steps[i], steps[i + d]] = [steps[i + d], steps[i]];
     setScenario({ ...scenario, steps });
   };
+  function applyGuidedSetup() {
+    const buttonName = guided.triggerLabel.trim();
+    const baselineText = guided.baselineText.trim();
+    const disruptionText = guided.disruptionText.trim();
+    const recoveryText = guided.recoveryText.trim();
+    const apiPath = guided.apiPath.trim();
+    if (scenario.type === 'health') {
+      setError('Choose Offline Recovery, API Failure or Slow API Response before setting up a resilience test.');
+      return;
+    }
+    if (!buttonName || !baselineText || !disruptionText || !recoveryText) {
+      setError('Enter the action label and the expected baseline, disruption and recovery messages.');
+      return;
+    }
+    if (scenario.type !== 'offline' && (!apiPath.startsWith('/') || apiPath.includes('?') || apiPath.includes('#'))) {
+      setError('Enter only the API path, such as /api/messages. Query strings and fragments are not used for matching.');
+      return;
+    }
+    if (scenario.type === 'slow' && (!Number.isInteger(guided.delayMs) || guided.delayMs < 1 || guided.delayMs > 15000)) {
+      setError('Choose a response delay between 1 and 15,000 milliseconds.');
+      return;
+    }
+    const emptyStep = (action: Step['action']): Step => ({
+      action,
+      selector: '',
+      locator: 'css',
+      value: '',
+      path: apiPath || '/api/messages',
+      delay: scenario.type === 'slow' ? guided.delayMs : 1000,
+    });
+    const clickStep = (): Step => ({
+      ...emptyStep('click'),
+      selector: buttonName,
+      locator: guided.triggerKind,
+    });
+    const inputStep = (): Step => ({
+      ...emptyStep('fill'),
+      selector: guided.fieldLabel.trim(),
+      locator: 'label',
+      value: guided.fieldValue,
+    });
+    const textCheck = (value: string): Step => ({
+      ...emptyStep('check'),
+      selector: value,
+      locator: 'text',
+    });
+    const steps: Step[] = [];
+    if (guided.fieldLabel.trim()) steps.push(inputStep());
+    steps.push(clickStep(), textCheck(baselineText));
+    steps.push(emptyStep(scenario.type === 'offline' ? 'offline' : scenario.type === 'failure' ? 'fail' : 'delay'));
+    if (guided.fieldLabel.trim()) steps.push(inputStep());
+    steps.push(clickStep(), textCheck(disruptionText));
+    if (guided.fieldLabel.trim() && guided.preserveField)
+      steps.push({ ...emptyStep('value'), selector: guided.fieldLabel.trim(), locator: 'label', value: guided.fieldValue });
+    steps.push(emptyStep('online'));
+    if (guided.fieldLabel.trim()) steps.push(inputStep());
+    steps.push(clickStep(), textCheck(recoveryText));
+    setScenario((current) => ({ ...current, steps }));
+    setGuidedSetupOpen(false);
+    setError('');
+    setNotice('Guided steps added. Review the baseline, disruption and recovery actions before running.');
+  }
   const scenarioValid = scenarioSchema.safeParse(scenario).success;
+  const scenarioReadiness = resilienceReadiness(scenario);
+  const scenarioReady = scenarioValid && !scenarioReadiness;
   return (
     <>
       {window.linksunderDesktop && (
@@ -756,7 +888,7 @@ function App() {
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (pendingRef.current || active || !scenario.externalConsent) return;
+                  if (pendingRef.current || active || !scenario.externalConsent || !scenarioReady) return;
                   void perform(async () => {
                     const parsed = scenarioSchema.parse(scenario);
                     const r = await api<Run>('/api/runs', parsed);
@@ -810,6 +942,7 @@ function App() {
                         type="url"
                         required
                         disabled={pending || active}
+                        placeholder="https://your-authorized-site.example"
                         value={scenario.url}
                         onChange={(e) => setScenario((current) => ({
                           ...current,
@@ -823,8 +956,32 @@ function App() {
                     label="Test type"
                     value={scenario.type}
                     options={testTypeOptions}
-                    onChange={(value) => setScenario({ ...scenario, type: value as Scenario['type'] })}
+                    onChange={(value) => {
+                      const type = value as Scenario['type'];
+                      setScenario((current) => ({
+                        ...current,
+                        type,
+                        name: current.name === scenarioTypeNames[current.type]
+                          ? scenarioTypeNames[type]
+                          : current.name,
+                      }));
+                    }}
                   />
+                  {scenario.type === 'health' ? (
+                    <p className="hint test-type-help">
+                      A one-click check of the page response, ready state, same-origin request failures and JavaScript errors. It measures basic page health; it does not test resilience.
+                      {scenarioReadiness && <span id="scenario-readiness-help"> {scenarioReadiness}</span>}
+                    </p>
+                  ) : (
+                    <div className="guided-prompt" role="status">
+                      <strong>{scenario.type === 'offline' ? 'Offline recovery' : scenario.type === 'failure' ? 'API failure' : 'Slow API response'} needs a real action and recovery expectation.</strong>
+                      <p>LinkSunder will only mark this as a resilience test after a matching request, an assertion during the disruption, and a recovery check are observed.</p>
+                      {scenarioReadiness && <p className="permission-hint" id="scenario-readiness-help">{scenarioReadiness}</p>}
+                      <button type="button" className="secondary" onClick={() => setGuidedSetupOpen(true)}>
+                        <ListChecks size={15} /> Guided setup
+                      </button>
+                    </div>
+                  )}
                   <label className="checkbox authorization-check">
                     <input
                       type="checkbox"
@@ -841,11 +998,70 @@ function App() {
                     <ShieldCheck size={15} aria-hidden="true" />
                     Confirm that you own or have permission to test this target before starting.
                   </p>
-                  <p className="hint">
-                    No steps? Quick Scan returns NOT TESTED. Add a baseline action, a disruption,
-                    an action that sends a request, an expectation, and a recovery check.
-                  </p>
+                  <p className="hint">The included Broken/Fixed demo is separate from your target. A new test starts with a blank URL.</p>
                 </section>
+                {guidedSetupOpen && scenario.type !== 'health' && (
+                  <section className="panel form guided-setup" aria-labelledby="guided-setup-title">
+                    <div className="panel-head">
+                      <h2 id="guided-setup-title">Guided resilience setup</h2>
+                      <button type="button" className="subtle" onClick={() => setGuidedSetupOpen(false)}>Close</button>
+                    </div>
+                    <p className="hint">Use the visible button or link name instead of a CSS selector. The test runs that action once for a baseline, again during the selected disruption, and once after restoring normal behavior.</p>
+                    <div className="columns">
+                      <SelectField
+                        label="Action type"
+                        value={guided.triggerKind}
+                        options={[{ value: 'button', label: 'Button' }, { value: 'link', label: 'Link' }]}
+                        onChange={(value) => setGuided((current) => ({ ...current, triggerKind: value as 'button' | 'link' }))}
+                      />
+                      <label>
+                        Button or link name
+                        <input value={guided.triggerLabel} onChange={(event) => setGuided((current) => ({ ...current, triggerLabel: event.target.value }))} placeholder="Send message" />
+                      </label>
+                    </div>
+                    <div className="columns">
+                      <label>
+                        Optional form field label
+                        <input value={guided.fieldLabel} onChange={(event) => setGuided((current) => ({ ...current, fieldLabel: event.target.value }))} placeholder="Message" />
+                      </label>
+                      <label>
+                        Value to enter before each request
+                        <input value={guided.fieldValue} onChange={(event) => setGuided((current) => ({ ...current, fieldValue: event.target.value }))} placeholder="A safe test value" disabled={!guided.fieldLabel} />
+                      </label>
+                    </div>
+                    {scenario.type !== 'offline' && (
+                      <label>
+                        API request path
+                        <input value={guided.apiPath} onChange={(event) => setGuided((current) => ({ ...current, apiPath: event.target.value }))} placeholder="/api/messages" />
+                        <small>Enter the path observed in a Basic Website Health Check. Query strings are not saved or used for matching.</small>
+                      </label>
+                    )}
+                    {scenario.type === 'slow' && (
+                      <NumberField
+                        label="Added API delay (ms)"
+                        value={guided.delayMs}
+                        min={1}
+                        max={15000}
+                        onChange={(delayMs) => setGuided((current) => ({ ...current, delayMs }))}
+                      />
+                    )}
+                    <div className="columns">
+                      <label>Expected baseline text<input value={guided.baselineText} onChange={(event) => setGuided((current) => ({ ...current, baselineText: event.target.value }))} placeholder="Saved" /></label>
+                      <label>Expected text during disruption<input value={guided.disruptionText} onChange={(event) => setGuided((current) => ({ ...current, disruptionText: event.target.value }))} placeholder="Could not send. Please retry." /></label>
+                    </div>
+                    <label>Expected text after recovery<input value={guided.recoveryText} onChange={(event) => setGuided((current) => ({ ...current, recoveryText: event.target.value }))} placeholder="Saved" /></label>
+                    {guided.fieldLabel && (
+                      <label className="checkbox">
+                        <input type="checkbox" checked={guided.preserveField} onChange={(event) => setGuided((current) => ({ ...current, preserveField: event.target.checked }))} />
+                        Verify that the form field keeps the entered value during the disruption
+                      </label>
+                    )}
+                    <p className="hint">Preview: baseline action and expectation → {scenario.type === 'offline' ? 'browser offline' : scenario.type === 'failure' ? 'HTTP 503 for the selected path' : 'delayed response for the selected path'} → repeat action and check behavior → restore normal network → repeat and check recovery.</p>
+                    <button type="button" className="primary" onClick={applyGuidedSetup}>
+                      <ListChecks size={16} /> Add guided test steps
+                    </button>
+                  </section>
+                )}
                 <section className="panel form">
                   <div className="panel-head">
                     <h2>Scenario steps</h2>
@@ -862,6 +1078,7 @@ function App() {
                             {
                               action: 'check',
                               selector: '',
+                            locator: 'css',
                               value: '',
                               path: '/api/messages',
                               delay: 1000,
@@ -882,7 +1099,7 @@ function App() {
                     <div className="step-empty">
                       <span className="empty-icon"><ListChecks size={24} /></span>
                       <div><strong>Choose the behavior you want to verify</strong><p>Add a browser action or an assertion. You can move, copy, and edit each step later.</p></div>
-                      <button type="button" className="secondary" onClick={() => setScenario({ ...scenario, steps: [{ action: 'check', selector: '', value: '', path: '/api/messages', delay: 1000 }] })}><Plus size={15} /> Add first step</button>
+                      <button type="button" className="secondary" onClick={() => setScenario({ ...scenario, steps: [{ action: 'check', selector: '', locator: 'css', value: '', path: '/api/messages', delay: 1000 }] })}><Plus size={15} /> Add first step</button>
                     </div>
                   )}
                   {scenario.steps.map((s, i) => (
@@ -900,13 +1117,21 @@ function App() {
                           onChange={(value) => updateStep(i, { action: value as Step['action'] })}
                         />
                         {['click', 'fill', 'check', 'value'].includes(s.action) && (
-                          <input
-                            aria-label={'Step ' + (i + 1) + ' selector'}
-                            placeholder="CSS selector, e.g. #note"
-                            required
-                            value={s.selector}
-                            onChange={(e) => updateStep(i, { selector: e.target.value })}
-                          />
+                          <>
+                            <SelectField
+                              label={'Step ' + (i + 1) + ' target type'}
+                              value={s.locator}
+                              options={locatorOptions}
+                              onChange={(value) => updateStep(i, { locator: value as Step['locator'] })}
+                            />
+                            <input
+                              aria-label={'Step ' + (i + 1) + ' selector'}
+                              placeholder={s.locator === 'button' ? 'Button name' : s.locator === 'link' ? 'Link name' : s.locator === 'label' ? 'Form field label' : s.locator === 'text' ? 'Visible text' : 'CSS selector, e.g. #note'}
+                              required
+                              value={s.selector}
+                              onChange={(e) => updateStep(i, { selector: e.target.value })}
+                            />
+                          </>
                         )}
                         {['fill', 'value'].includes(s.action) && (
                           <input
@@ -1043,9 +1268,9 @@ function App() {
                     </button>
                   </div>
                 </details>
-                <button className="primary" disabled={pending || active || !scenario.externalConsent || !scenarioValid} aria-describedby="scenario-authorization-help" aria-busy={pending || active}>
+                <button className="primary" disabled={pending || active || !scenario.externalConsent || !scenarioReady} aria-describedby={scenarioReadiness ? 'scenario-authorization-help scenario-readiness-help' : 'scenario-authorization-help'} aria-busy={pending || active}>
                   {pending || active ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
-                  {pending ? 'Starting test…' : active ? 'Test running…' : 'Run Test'}
+                  {pending ? 'Starting test…' : active ? 'Test running…' : scenario.type === 'health' ? 'Run Health Check' : 'Run Resilience Test'}
                 </button>
               </form>
             </>
@@ -1070,7 +1295,7 @@ function App() {
                   <strong>{(selected.duration / 1000).toFixed(1)}s</strong>
                 </div>
                 <div>
-                  <span>Assertions passed</span>
+                  <span>{selected.type === 'health' ? 'Health checks passed' : 'Assertions passed'}</span>
                   <strong>
                     {selected.passed} / {selected.assertions}
                   </strong>
@@ -1084,11 +1309,40 @@ function App() {
               </div>
               {selected.error && <div className="alert">{selected.error}</div>}
               {selected.advice && <p className="advice">{selected.advice}</p>}
-              {selected.resilience && (
+              {selected.health && (
+                <section className="panel form health-evidence" aria-label="Basic website health evidence">
+                  <h2>Basic Website Health Check</h2>
+                  <p className="hint">These observations cover the initial page load only. They do not prove offline recovery or API resilience.</p>
+                  <dl>
+                    <div><dt>HTTP response</dt><dd>{selected.health.httpStatus ?? 'No response'}</dd></div>
+                    <div><dt>Navigation timing</dt><dd>{selected.health.navigationMs ?? '—'} ms</dd></div>
+                    <div><dt>Document ready state</dt><dd>{selected.health.readyState}</dd></div>
+                    <div><dt>Same-origin failed requests</dt><dd>{selected.health.sameOriginFailedRequests.length}</dd></div>
+                    <div><dt>Uncaught JavaScript errors</dt><dd>{selected.health.javascriptErrors}</dd></div>
+                    <div><dt>Console errors</dt><dd>{selected.health.consoleErrors}</dd></div>
+                  </dl>
+                  <div className="health-check-list">
+                    {selected.health.checks.map((check) => (
+                      <div className="timeline" key={check.name}>
+                        <span className={'badge ' + check.status}>{check.status === 'pass' ? <Check size={15} /> : <X size={15} />}</span>
+                        <div><strong>{check.name}</strong><p>{check.message}</p></div>
+                      </div>
+                    ))}
+                  </div>
+                  {selected.health.sameOriginFailedRequests.length > 0 && (
+                    <div><h3>Failed same-origin requests</h3><ul>{selected.health.sameOriginFailedRequests.map((item, index) => <li key={`${item.path}-${index}`}>{item.path} · {item.reason}</li>)}</ul></div>
+                  )}
+                  {selected.health.observedApiPaths.length > 0 && (
+                    <div><h3>API paths observed during page load</h3><p className="hint">You can copy a path into Guided setup when the page action is known to request it.</p><ul>{selected.health.observedApiPaths.map((path) => <li key={path}><code>{path}</code></li>)}</ul></div>
+                  )}
+                </section>
+              )}
+              {selected.type !== 'health' && selected.resilience && (
                 <section className="panel form resilience-evidence" aria-label="Resilience test evidence">
                   <h2>Resilience evidence</h2>
                   <dl>
                     <div><dt>Disruption</dt><dd>{selected.resilience.fault === 'none' ? 'Not configured' : selected.resilience.fault}</dd></div>
+                    {selected.resilience.path && <div><dt>Request path affected</dt><dd><code>{selected.resilience.path}</code></dd></div>}
                     <div><dt>Baseline requests</dt><dd>{selected.resilience.baselineRequests}</dd></div>
                     <div><dt>Requests affected</dt><dd>{selected.resilience.triggeredRequests}</dd></div>
                     <div><dt>Recovery requests</dt><dd>{selected.resilience.recoveryRequests}</dd></div>

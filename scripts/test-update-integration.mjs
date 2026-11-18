@@ -5,9 +5,11 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
+import { AbortSignal } from 'node:abort_controller';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { clearTimeout, setTimeout } from 'node:timers';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -20,6 +22,29 @@ const currentVersion = packageJson.version;
 const platform = process.platform === 'win32' ? 'windows' : process.platform === 'linux' ? 'linux' : undefined;
 assert.ok(platform, 'The cross-version update test supports Windows NSIS and Linux AppImage only.');
 assert.equal(process.env.CI, 'true', 'This destructive-to-installation test must run only on an isolated CI runner.');
+
+let currentPhase = 'initialize isolated test';
+function phase(label) {
+  currentPhase = label;
+  console.log(`[update-integration] ${label}`);
+}
+
+function withTimeout(label, operation, timeoutMs = 15000) {
+  let timer;
+  return Promise.race([
+    operation,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timed out during ${currentPhase}: ${label}.`)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+const watchdog = setTimeout(() => {
+  console.error(`[update-integration] 30 minute safety limit reached during ${currentPhase}.`);
+  try { oldApp?.process().kill(); } catch { /* The app may already have exited. */ }
+  try { updatedPage?.context().browser()?.close(); } catch { /* The browser may already have closed. */ }
+  process.exit(1);
+}, 30 * 60 * 1000);
 
 const testRoot = await mkdtemp(path.join(tmpdir(), 'linksunder-update-integration-'));
 assert.ok(path.resolve(testRoot).startsWith(path.resolve(tmpdir()) + path.sep));
@@ -61,9 +86,13 @@ function runProcess(executable, args, options = {}) {
 }
 
 async function downloadOldRelease() {
-  const response = await fetch(`https://github.com/kavianpcx/linksunder/releases/download/v${oldVersion}/${oldAssetName}`);
+  phase(`download published v${oldVersion} package`);
+  const response = await fetch(`https://github.com/kavianpcx/linksunder/releases/download/v${oldVersion}/${oldAssetName}`, {
+    signal: AbortSignal.timeout(180000),
+  });
   if (!response.ok || !response.body) throw new Error(`Could not download the published ${oldVersion} test package (${response.status}).`);
   await pipeline(Readable.fromWeb(response.body), createWriteStream(oldAssetPath));
+  phase(`prepare isolated v${oldVersion} installation`);
 }
 
 function startFeedServer() {
@@ -136,7 +165,7 @@ async function waitUntil(description, readValue, predicate, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   let latest;
   while (Date.now() < deadline) {
-    latest = await readValue();
+    latest = await withTimeout(`read state while waiting for ${description}`, Promise.resolve().then(readValue));
     if (predicate(latest)) return latest;
     await delay(250);
   }
@@ -144,33 +173,40 @@ async function waitUntil(description, readValue, predicate, timeoutMs = 30000) {
 }
 
 async function updateState(page) {
-  return page.evaluate(() => window.linksunderDesktop.getUpdateState());
+  return withTimeout('read updater state from the application', page.evaluate(() => window.linksunderDesktop.getUpdateState()));
 }
 
 async function connectToUpdatedApp(port) {
+  phase('connect to the updated application');
   const endpoint = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 180000;
   let browser;
-  while (Date.now() < deadline) {
-    if (!browser) {
-      try {
-        browser = await chromium.connectOverCDP(endpoint, { timeout: 2000 });
-      } catch {
-        await delay(500);
-        continue;
+  try {
+    while (Date.now() < deadline) {
+      if (!browser) {
+        try {
+          browser = await chromium.connectOverCDP(endpoint, { timeout: 2000 });
+        } catch {
+          await delay(500);
+          continue;
+        }
       }
+      const page = browser.contexts().flatMap((context) => context.pages()).find((candidate) => candidate.url().startsWith('http://127.0.0.1:'));
+      if (page) return { browser, page };
+      if (!browser.isConnected()) browser = undefined;
+      await delay(500);
     }
-    const page = browser.contexts().flatMap((context) => context.pages()).find((candidate) => candidate.url().startsWith('http://127.0.0.1:'));
-    if (page) return { browser, page };
-    if (!browser.isConnected()) browser = undefined;
-    await delay(500);
+    throw new Error('The updated application did not restart with its isolated verification window.');
+  } catch (error) {
+    if (browser) await withTimeout('close an unverified updated application', browser.close(), 10000).catch(() => {});
+    throw error;
   }
-  throw new Error('The updated application did not restart with its isolated verification window.');
 }
 
 async function prepareOldInstallation(feedUrl) {
   await downloadOldRelease();
   if (platform === 'windows') {
+    phase(`install isolated v${oldVersion} Windows package`);
     await runProcess(oldAssetPath, ['/S', `/D=${installDirectory}`], { timeout: 180000 });
     const updateConfig = path.join(installDirectory, 'resources', configName);
     await writeFile(updateConfig, `provider: generic\nurl: ${feedUrl}\nupdaterCacheDirName: linksunder-update-integration\nchannel: latest\n`, 'utf8');
@@ -178,6 +214,7 @@ async function prepareOldInstallation(feedUrl) {
     return path.join(installDirectory, 'LinkSunder.exe');
   }
 
+  phase(`extract isolated v${oldVersion} Linux package`);
   appImagePath = path.join(testRoot, oldAssetName);
   await chmod(appImagePath, 0o755);
   await runProcess(appImagePath, ['--appimage-extract'], { cwd: testRoot, env: { ...process.env, APPIMAGE_EXTRACT_AND_RUN: '1' }, timeout: 180000 });
@@ -199,16 +236,21 @@ async function prepareOldInstallation(feedUrl) {
 }
 
 async function stopUpdatedApp() {
-  if (!updatedPage || updatedPage.isClosed()) return;
-  await updatedPage.evaluate(() => window.linksunderDesktop.close()).catch(() => {});
-  await updatedBrowser?.close().catch(() => {});
+  const page = updatedPage;
+  const browser = updatedBrowser;
   updatedPage = undefined;
   updatedBrowser = undefined;
+  if (page && !page.isClosed())
+    await withTimeout('request the verified application to close', page.evaluate(() => window.linksunderDesktop.close()), 5000).catch(() => {});
+  if (browser)
+    await withTimeout('close the verified application browser connection', browser.close(), 10000).catch(() => {});
 }
 
 try {
+  phase('start local update feed');
   const feed = await startFeedServer();
   const oldExecutable = await prepareOldInstallation(feed.url);
+  phase('prepare isolated restart diagnostics');
   const debugPortServer = createServer();
   await new Promise((resolve) => debugPortServer.listen(0, '127.0.0.1', resolve));
   const debugAddress = debugPortServer.address();
@@ -231,6 +273,7 @@ try {
           APPDIR: path.join(testRoot, 'squashfs-root'),
         }),
   };
+  phase(`launch isolated v${oldVersion} application`);
   oldApp = await electron.launch({
     executablePath: oldExecutable,
     args: [`--remote-debugging-port=${debugPort}`],
@@ -238,6 +281,7 @@ try {
     timeout: 90000,
   });
   const page = await oldApp.firstWindow({ timeout: 90000 });
+  phase(`verify v${oldVersion} baseline and preserved report`);
   await page.getByRole('heading', { name: 'Build for the unexpected.' }).waitFor({ timeout: 30000 });
   const initialState = await updateState(page);
   assert.equal(initialState.currentVersion, oldVersion);
@@ -253,11 +297,13 @@ try {
     if (!response.ok) throw new Error(`Could not create a persistence report: ${response.status}`);
     return response.json();
   }, sentinel);
+  phase('wait for the baseline report to complete');
   await waitUntil('the report to finish', async () => page.evaluate(async (id) => (await fetch(`/api/runs/${id}`).then((response) => response.json())).status, created.id), (status) => status !== 'running', 60000);
   await page.getByRole('button', { name: 'Light appearance', exact: true }).click();
   await waitUntil('the light preference to apply', () => page.evaluate(() => document.documentElement.dataset.theme), (theme) => theme === 'light');
   const originBeforeUpdate = new URL(page.url()).origin;
 
+  phase('check for the v0.5.0 update');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('button', { name: 'Check for Updates', exact: true }).click();
   const available = await waitUntil('v0.5.0 to be discovered', () => updateState(page), (state) => state.status === 'available' || state.status === 'error');
@@ -265,13 +311,16 @@ try {
   assert.equal(available.latestVersion, currentVersion);
   assert.equal(available.downloadSize, packageInfo.size);
 
+  phase('download a partial update and confirm real progress');
   await page.getByRole('button', { name: 'Download Update', exact: true }).click();
   await waitUntil('download progress to advance', () => updateState(page), (state) => state.status === 'downloading' && (state.progress?.transferred || 0) > 0, 90000);
+  phase('cancel the partial update download');
   await page.getByRole('button', { name: 'Cancel Download', exact: true }).click();
   const cancelled = await waitUntil('the download cancellation', () => updateState(page), (state) => state.status === 'cancelled' || state.status === 'error', 30000);
   assert.equal(cancelled.status, 'cancelled', `The update download did not cancel cleanly: ${cancelled.message}`);
   assert.equal((await updateState(page)).currentVersion, oldVersion);
 
+  phase('retry from byte zero and verify the complete update');
   await page.getByRole('button', { name: 'Retry Download', exact: true }).click();
   const ready = await waitUntil('the retry to download and verify the package', () => updateState(page), (state) => state.status === 'ready' || state.status === 'error', 600000);
   assert.equal(ready.status, 'ready', `The update did not pass package verification: ${ready.message}`);
@@ -281,6 +330,7 @@ try {
   await oldApp.evaluate(({ dialog }) => {
     dialog.showMessageBox = async () => ({ response: 1 });
   });
+  phase('install the verified update and wait for v0.4.0 to close');
   const oldAppClosed = oldApp.waitForEvent('close', { timeout: 240000 });
   await page.getByRole('button', { name: 'Restart & Install', exact: true }).click();
   await oldAppClosed;
@@ -289,6 +339,7 @@ try {
   updatedPage = updated.page;
   await updatedPage.getByRole('heading', { name: 'Build for the unexpected.' }).waitFor({ timeout: 60000 });
   const finalState = await waitUntil('the installed version to change', () => updateState(updatedPage), (state) => state.currentVersion === currentVersion, 60000);
+  phase('verify the new version and retained settings');
   assert.equal(finalState.currentVersion, currentVersion);
   assert.equal(finalState.supported, true, 'The installed package must remain eligible for its next in-app update.');
   assert.equal(new URL(updatedPage.url()).origin, originBeforeUpdate, 'The isolated engine should retain its saved local port and browser preferences.');
@@ -298,12 +349,20 @@ try {
     return response.ok ? response.json() : undefined;
   }, created.id);
   assert.equal(persistedReport?.title, sentinel, 'The v0.4.0 report must remain available after installing v0.5.0.');
-  console.log(`Cross-version updater passed: v${oldVersion} -> v${currentVersion}; progress, cancel, fresh retry, SHA-512 verification, install, report and preference persistence.`);
+  phase(`cross-version update passed: v${oldVersion} -> v${currentVersion}; progress, cancel, byte-zero retry, verification, install, report and preference persistence`);
 } finally {
-  await stopUpdatedApp();
-  await oldApp?.close().catch(() => {});
+  phase('bounded isolated test cleanup');
+  await withTimeout('close the updated application', stopUpdatedApp(), 15000).catch((error) => console.warn(error.message));
+  const oldProcess = oldApp?.process();
+  if (oldProcess && oldProcess.exitCode === null && oldProcess.signalCode === null) {
+    await withTimeout('close the previous application', oldApp.close(), 10000).catch(() => {});
+    if (oldProcess.exitCode === null && oldProcess.signalCode === null) oldProcess.kill();
+  }
   if (windowsUninstaller) await runProcess(windowsUninstaller, ['/S'], { timeout: 60000 }).catch(() => {});
-  if (server?.listening) await new Promise((resolve) => server.close(resolve));
-  await rm(testRoot, { recursive: true, force: true });
+  if (server?.listening) {
+    server.closeAllConnections();
+    await withTimeout('close the local update feed', new Promise((resolve) => server.close(resolve)), 10000).catch(() => {});
+  }
+  await withTimeout('remove the temporary installation', rm(testRoot, { recursive: true, force: true }), 60000).catch((error) => console.warn(error.message));
+  clearTimeout(watchdog);
 }
-

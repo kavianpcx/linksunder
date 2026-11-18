@@ -46,10 +46,11 @@ requirements. A responsive UI does not mean a standalone mobile test engine exis
 
 ### First test
 
-1. Open LinkSunder and select **New Test**.
-2. Enter the address of a website you own, choose your steps and expected result.
-3. Select **Run Test**, inspect the timeline, then **Download Report**.
-4. Use **Save scenario** to reuse it later. Saved scenarios may contain your test inputs.
+1. Select **New Test**, enter the address of a website you own, and confirm that you have permission to test it.
+2. Run the default **Basic Website Health Check** and review the response, ready state, request failures, JavaScript errors, and timing in its report. This checks the initial page load; it does not prove resilience.
+3. For a resilience test, choose **Offline Recovery**, **API Failure**, or **Slow API Response**, then select **Guided setup**. Enter the visible button/link name, the API path where needed, and the expected messages before, during, and after the disruption.
+4. Review the generated steps, confirm permission for the target, and select **Run Resilience Test**. The button remains disabled until the scenario includes a real trigger and recovery assertion.
+5. Download the report or use **Save scenario** to reuse it. Saved scenarios may contain your test inputs.
 
 The optional **Run Demo** button is a guided example inside the full application,
 not a restriction on testing your own sites. There are no pre-filled fake results.
@@ -98,6 +99,8 @@ The demo uses no external service. Its two results are saved to your real histor
 - A responsive dashboard with dark/light themes, indexed server-side history, and one active run.
 - Ordered no-code steps: open, click, fill, offline, online, fail/delay API, check
   element/value, and screenshot. Add, edit, remove, or reorder; import/export JSON.
+- A one-click Basic Website Health Check with listed page-load evidence, plus Guided
+  resilience setup for baseline, disruption, application response, and recovery.
 - Chromium network emulation and controlled HTTP 503 responses.
 - Resilience evidence for baseline requests, real fault triggers, assertions, and recovery. A run cannot pass just because a page opened; Quick Scan without a configured flow reports **NOT TESTED**.
 - A focused API Test Builder for safe HTTP methods, headers, bodies, expected status/time/headers, JSON checks and schema checks, bounded retries, same-origin redirects, and local fault simulations. Data-changing methods require explicit confirmation and are never replayed automatically.

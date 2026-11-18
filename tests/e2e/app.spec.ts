@@ -218,29 +218,32 @@ test('API Test Builder exposes an accessible Cancel action and stops latency wit
   expect(report.apiTest.recovery).toBeUndefined();
 });
 
-test('builds an assertion through the no-code UI and labels it NOT TESTED without a fault', async ({ page }) => {
+test('blocks incomplete resilience scenarios and preserves their setup explanation', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'New test', exact: true }).click();
   await page.screenshot({ path: 'test-results/scenario-builder-empty.png', fullPage: true });
   expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations).toEqual([]);
-  await page.getByLabel('Scenario name').fill('My own UI assertion');
-  await page.getByRole('button', { name: 'Add step' }).click();
-  await page.getByLabel('Step 1 selector').fill('#note');
-  await page.screenshot({ path: 'test-results/scenario-builder-step.png', fullPage: true });
+  await page.getByLabel('Scenario name').fill('Incomplete offline check');
+  await page.getByLabel('Website URL').fill(`${appURL}/demo/fixed`);
+  await page.getByRole('combobox', { name: 'Test type' }).click();
+  await page.getByRole('option', { name: 'Offline Recovery' }).click();
+  const runButton = page.getByRole('button', { name: 'Run Resilience Test', exact: true });
+  await expect(runButton).toBeDisabled();
+  await expect(page.getByText(/Add exactly one Go Offline step/)).toBeVisible();
+  await page.getByRole('button', { name: 'Guided setup' }).click();
+  await expect(page.getByRole('heading', { name: 'Guided resilience setup' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
   await page.getByRole('button', { name: 'Save scenario', exact: true }).click();
-  await expect(page.getByRole('status')).toContainText('Scenario saved');
+  await expect(page.getByText('Scenario saved on this computer.', { exact: true })).toBeVisible();
   await page.reload();
   await page.getByRole('button', { name: 'New test', exact: true }).click();
   const savedScenarios = page.getByRole('combobox', { name: 'Saved scenarios' });
   await savedScenarios.focus();
-  await savedScenarios.press('m');
+  await savedScenarios.press('i');
   await savedScenarios.press('Enter');
-  await expect(page.getByLabel('Step 1 selector')).toHaveValue('#note');
-  await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
-  await page.getByRole('button', { name: 'Run Test', exact: true }).click();
-  await expect(page.getByRole('link', { name: 'Download JSON Report' })).toBeVisible();
-  await expect(page.locator('.heading .badge')).toHaveText('NOT TESTED');
-  await expect(page.getByText(/without a network disruption/i)).toBeVisible();
+  await expect(page.getByLabel('Website URL')).toHaveValue(`${appURL}/demo/fixed`);
+  await expect(page.getByRole('button', { name: 'Run Resilience Test', exact: true })).toBeDisabled();
+  await expect(page.getByText(/Add exactly one Go Offline step/)).toBeVisible();
 });
 
 test('authorization gates scenario and network actions and resets after target changes', async ({ page }) => {
@@ -249,7 +252,7 @@ test('authorization gates scenario and network actions and resets after target c
   const scenarioTarget = page.getByLabel('Website URL');
   await scenarioTarget.fill(`${appURL}/demo/fixed`);
   const scenarioConsent = page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' });
-  const runButton = page.getByRole('button', { name: 'Run Test', exact: true });
+  const runButton = page.getByRole('button', { name: 'Run Health Check', exact: true });
   await expect(runButton).toBeDisabled();
   await expect(page.getByText('Confirm that you own or have permission to test this target before starting.')).toBeVisible();
   await expect(scenarioConsent).toHaveAttribute('aria-describedby', 'scenario-authorization-help');
@@ -281,32 +284,76 @@ test('authorization gates scenario and network actions and resets after target c
   expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations).toEqual([]);
 });
 
+test('New Test runs an evidence-based health check and a guided API failure workflow', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New test', exact: true }).click();
+  await page.getByLabel('Website URL').fill(`${appURL}/demo/fixed`);
+  await expect(page.getByText(/does not test resilience/i)).toBeVisible();
+  await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
+  await page.getByRole('button', { name: 'Run Health Check', exact: true }).click();
+  await expect(page.locator('.heading .badge')).toHaveText('PASS', { timeout: 15000 });
+  const healthEvidence = page.getByRole('region', { name: 'Basic website health evidence' });
+  await expect(healthEvidence).toContainText('HTTP response');
+  await expect(healthEvidence).toContainText('Document ready state');
+  await expect(healthEvidence).toContainText('do not prove offline recovery or API resilience');
+
+  await page.getByRole('button', { name: 'New test', exact: true }).click();
+  await page.getByLabel('Scenario name').fill('Guided API failure check');
+  await page.getByLabel('Website URL').fill(`${appURL}/demo/fixed`);
+  const authorization = page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' });
+  if (await authorization.isChecked()) await authorization.uncheck();
+  await page.getByRole('combobox', { name: 'Test type' }).click();
+  await page.getByRole('option', { name: 'API Failure' }).click();
+  await page.getByRole('button', { name: 'Guided setup' }).click();
+  await page.getByLabel('Button or link name').fill('Send note');
+  await page.getByLabel('Optional form field label').fill('Your note');
+  await page.getByLabel('Value to enter before each request').fill('Baseline draft');
+  await page.getByLabel('API request path').fill('/demo/api/messages');
+  await page.getByLabel('Expected baseline text').fill('Saved');
+  await page.getByLabel('Expected text during disruption').fill('Could not send. Please retry.');
+  await page.getByLabel('Expected text after recovery').fill('Saved');
+  await page.getByRole('button', { name: 'Add guided test steps' }).click();
+  const runResilience = page.getByRole('button', { name: 'Run Resilience Test', exact: true });
+  await expect(runResilience).toBeDisabled();
+  await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
+  await expect(runResilience).toBeEnabled();
+  await runResilience.click();
+  await expect(page.locator('.heading .badge')).toHaveText('PASS', { timeout: 20000 });
+  const resilienceEvidence = page.getByRole('region', { name: 'Resilience test evidence' });
+  await expect(resilienceEvidence).toContainText('/demo/api/messages');
+  await expect(resilienceEvidence).toContainText('Assertions during disruption');
+  const jsonReport = page.getByRole('link', { name: 'Download JSON Report' });
+  const reportResponse = await page.request.get((await jsonReport.getAttribute('href')) || '');
+  const report = await reportResponse.json();
+  expect(report.resilience.triggeredRequests).toBeGreaterThan(0);
+  expect(report.resilience.disruptionAssertions).toBeGreaterThan(0);
+  expect(report.resilience.recoveryRequests).toBeGreaterThan(0);
+  expect(report.resilience.recoveryAssertions).toBeGreaterThan(0);
+});
+
 test('Scenario Builder starts a real run and cancels it accessibly', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'New test', exact: true }).click();
   await page.getByLabel('Scenario name').fill('Cancelable delayed request');
   await page.getByLabel('Website URL').fill(`${appURL}/demo/fixed`);
-  await page.getByRole('button', { name: 'Add first step' }).click();
-
-  const delayAction = page.getByRole('combobox', { name: 'Step 1 action' });
-  await delayAction.click();
-  await page.getByRole('option', { name: 'Delay API Response' }).click();
-  await page.getByLabel('API path').fill('/demo/api/messages');
-  await page.getByRole('spinbutton', { name: 'Delay milliseconds' }).fill('15000');
-  await page.getByRole('button', { name: 'Add step' }).click();
-  const clickAction = page.getByRole('combobox', { name: 'Step 2 action' });
-  await clickAction.click();
-  await page.getByRole('option', { name: 'Click' }).click();
-  await page.getByLabel('Step 2 selector').fill('#send');
-  await page.getByRole('button', { name: 'Add step' }).click();
-  const checkAction = page.getByRole('combobox', { name: 'Step 3 action' });
-  await checkAction.click();
-  await page.getByRole('option', { name: 'Check Element', exact: true }).click();
-  await page.getByLabel('Step 3 selector').fill('#status[data-state="success"]');
+  await page.getByRole('combobox', { name: 'Test type' }).click();
+  await page.getByRole('option', { name: 'Slow API Response' }).click();
+  await page.getByRole('button', { name: 'Guided setup' }).click();
+  await page.getByLabel('Button or link name').fill('Send note');
+  await page.getByLabel('Optional form field label').fill('Your note');
+  await page.getByLabel('Value to enter before each request').fill('A draft to keep');
+  await page.getByLabel('API request path').fill('/demo/api/messages');
+  await page.getByRole('spinbutton', { name: 'Added API delay (ms)' }).fill('15000');
+  await page.getByLabel('Expected baseline text').fill('Saved');
+  await page.getByLabel('Expected text during disruption').fill('Sending…');
+  await page.getByLabel('Expected text after recovery').fill('Saved');
+  await page.getByRole('button', { name: 'Add guided test steps' }).click();
+  await expect(page.getByText(/Add exactly one Delay API Response step/)).toHaveCount(0);
   await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
+  await expect(page.getByRole('button', { name: 'Run Resilience Test', exact: true })).toBeEnabled();
 
   const started = page.waitForResponse((response) => response.url().endsWith('/api/runs') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Run Test', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Resilience Test', exact: true }).click();
   const run = await (await started).json() as { id: string };
   await expect(page.getByRole('button', { name: 'Cancel run', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Cancel run', exact: true }).focus();
@@ -676,4 +723,3 @@ test('bulk deletion and clear-all history require confirmation', async ({ page, 
   expect(await request.get('/api/runs').then((response) => response.json())).toHaveLength(0);
   expect(await request.get('/api/network/reports').then((response) => response.json())).toHaveLength(0);
 });
-
