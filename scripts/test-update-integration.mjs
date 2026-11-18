@@ -329,14 +329,30 @@ try {
   await oldApp.evaluate(({ dialog }) => {
     dialog.showMessageBox = async () => ({ response: 1 });
   });
+  await oldApp.evaluate(({ app }) => {
+    const diagnostics = globalThis.__linksunderQuitDiagnostics = [];
+    app.on('before-quit', () => diagnostics.push('before-quit'));
+    app.on('will-quit', () => diagnostics.push('will-quit'));
+    for (const method of ['quit', 'exit']) {
+      const original = app[method].bind(app);
+      app[method] = (...args) => {
+        diagnostics.push(`${method}(${args.join(',')})`);
+        return original(...args);
+      };
+    }
+  });
   phase('install the verified update and wait for v0.4.0 to close');
-  const oldAppClosed = oldApp.waitForEvent('close', { timeout: 240000 });
   const installStarted = await withTimeout('request the verified update installation', page.evaluate(() => window.linksunderDesktop.installUpdate()), 30000);
   if (installStarted !== true) {
     const state = await updateState(page).catch((error) => ({ message: error.message }));
     assert.fail(`The verified updater declined to start installation: ${JSON.stringify(state)}`);
   }
-  await oldAppClosed;
+  try {
+    await oldApp.waitForEvent('close', { timeout: 20000 });
+  } catch (error) {
+    const diagnostics = await oldApp.evaluate(() => globalThis.__linksunderQuitDiagnostics).catch((evaluationError) => ({ error: evaluationError.message }));
+    assert.fail(`The old app did not exit after installation started: ${JSON.stringify(diagnostics)}; ${error.message}`);
+  }
   const updated = await connectToUpdatedApp(debugPort);
   updatedBrowser = updated.browser;
   updatedPage = updated.page;
