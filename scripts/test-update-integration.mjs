@@ -76,6 +76,7 @@ let oldProcess;
 let oldBrowser;
 let updatedBrowser;
 let updatedPage;
+let updatedAppConnected = false;
 let appImagePath;
 let windowsUninstaller;
 
@@ -253,6 +254,7 @@ async function connectToUpdatedApp(port) {
   const endpoint = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 60000;
   let browser;
+  let pageUrls = [];
   try {
     while (Date.now() < deadline) {
       if (!browser) {
@@ -263,14 +265,24 @@ async function connectToUpdatedApp(port) {
           continue;
         }
       }
-      const page = browser.contexts().flatMap((context) => context.pages()).find((candidate) => candidate.url().startsWith('http://127.0.0.1:'));
+      const pages = browser.contexts().flatMap((context) => context.pages());
+      pageUrls = pages.map((candidate) => candidate.url());
+      const page = pages.find((candidate) => candidate.url().startsWith('http://127.0.0.1:'));
       if (page) return { browser, page };
       if (!browser.isConnected()) browser = undefined;
       await delay(500);
     }
     const startupEvents = await readFile(startupLogPath, 'utf8').catch((error) => 'Could not read startup events: ' + error.message);
     const quitEvents = await readFile(quitLogPath, 'utf8').catch((error) => 'Could not read quit events: ' + error.message);
-    throw new Error('The updated application did not restart with its isolated verification window. Startup events: ' + (startupEvents || '(none)') + '; previous-app quit events: ' + (quitEvents || '(none)'));
+    const debugEndpoints = await Promise.all(['json/version', 'json/list'].map(async (name) => {
+      try {
+        const response = await fetch(`${endpoint}/${name}`, { signal: AbortSignal.timeout(1500) });
+        return { name, status: response.status, body: (await response.text()).slice(0, 2000) };
+      } catch (error) {
+        return { name, error: error.message };
+      }
+    }));
+    throw new Error('The updated application did not restart with its isolated verification window. Startup events: ' + (startupEvents || '(none)') + '; previous-app quit events: ' + (quitEvents || '(none)') + '; CDP pages: ' + JSON.stringify(pageUrls) + '; debug endpoints: ' + JSON.stringify(debugEndpoints));
   } catch (error) {
     if (browser) await withTimeout('close an unverified updated application', browser.close(), 10000).catch(() => {});
     throw error;
@@ -441,6 +453,7 @@ try {
   const updated = await connectToUpdatedApp(debugPort);
   updatedBrowser = updated.browser;
   updatedPage = updated.page;
+  updatedAppConnected = true;
   await updatedPage.getByRole('heading', { name: 'Build for the unexpected.' }).waitFor({ timeout: 60000 });
   const finalState = await waitUntil('the installed version to change', () => updateState(updatedPage), (state) => state.currentVersion === currentVersion, 60000);
   phase('verify the new version and retained settings');
@@ -457,6 +470,15 @@ try {
 } finally {
   phase('bounded isolated test cleanup');
   await withTimeout('close the updated application', stopUpdatedApp(), 15000).catch((error) => console.warn(error.message));
+  if (!updatedAppConnected) {
+    const startupEvents = await readFile(startupLogPath, 'utf8').catch(() => '');
+    const started = startupEvents.split(/\r?\n/).map((line) => {
+      try { return JSON.parse(line); } catch { return undefined; }
+    }).filter((entry) => entry?.event === 'startup' && entry.version === currentVersion).at(-1);
+    if (Number.isInteger(started?.pid) && started.pid !== process.pid) {
+      try { process.kill(started.pid); } catch { /* The updated app may already have exited. */ }
+    }
+  }
   if (oldBrowser) await withTimeout('disconnect the previous app window', oldBrowser.close(), 10000).catch(() => {});
   if (oldProcess && oldProcess.exitCode === null && oldProcess.signalCode === null) {
     const oldProcessExit = new Promise((resolve) => oldProcess.once('exit', resolve));
