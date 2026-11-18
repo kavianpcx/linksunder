@@ -42,13 +42,13 @@ const watchdog = setTimeout(() => {
   console.error(`[update-integration] 30 minute safety limit reached during ${currentPhase}.`);
   try { oldProcess?.kill(); } catch { /* The app may already have exited. */ }
   try { void oldBrowser?.close(); } catch { /* The browser connection may already be closed. */ }
-  try { updatedPage?.context().browser()?.close(); } catch { /* The browser may already have closed. */ }
   process.exit(1);
 }, 30 * 60 * 1000);
 
 const testRoot = await mkdtemp(path.join(tmpdir(), 'linksunder-update-integration-'));
 const quitLogPath = path.join(testRoot, 'update-quit-events.log');
 const startupLogPath = path.join(testRoot, 'update-start-events.log');
+const stopFilePath = path.join(testRoot, 'stop-updated-app');
 await writeFile(quitLogPath, '', 'utf8');
 await writeFile(startupLogPath, '', 'utf8');
 assert.ok(path.resolve(testRoot).startsWith(path.resolve(tmpdir()) + path.sep));
@@ -74,9 +74,6 @@ await stat(manifestPath);
 let server;
 let oldProcess;
 let oldBrowser;
-let updatedBrowser;
-let updatedPage;
-let updatedAppConnected = false;
 let appImagePath;
 let windowsUninstaller;
 
@@ -321,15 +318,35 @@ async function prepareOldInstallation(feedUrl) {
   return path.join(extractedRoot, 'AppRun');
 }
 
-async function stopUpdatedApp() {
-  const page = updatedPage;
-  const browser = updatedBrowser;
-  updatedPage = undefined;
-  updatedBrowser = undefined;
-  if (page && !page.isClosed())
-    await withTimeout('request the verified application to close', page.evaluate(() => window.linksunderDesktop.close()), 5000).catch(() => {});
-  if (browser)
-    await withTimeout('close the verified application browser connection', browser.close(), 10000).catch(() => {});
+async function readUpdatedStartupEvents() {
+  const contents = await readFile(startupLogPath, 'utf8').catch(() => '');
+  return contents.split(/\r?\n/).map((line) => {
+    try { return JSON.parse(line); } catch { return undefined; }
+  }).filter(Boolean);
+}
+
+function isProcessRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+async function stopUpdatedApplication() {
+  const started = (await readUpdatedStartupEvents())
+    .filter((entry) => entry.event === 'startup' && entry.version === currentVersion)
+    .at(-1);
+  if (!Number.isInteger(started?.pid) || started.pid === process.pid || !isProcessRunning(started.pid)) return;
+  await writeFile(stopFilePath, 'stop', 'utf8');
+  try {
+    await waitUntil('the updated application to close', () => isProcessRunning(started.pid), (running) => !running, 15000);
+  } catch {
+    try { process.kill(started.pid); } catch { /* The isolated app may already have exited. */ }
+    await waitUntil('the updated application process to stop', () => isProcessRunning(started.pid), (running) => !running, 5000).catch(() => {});
+  }
 }
 
 try {
@@ -349,6 +366,7 @@ try {
     LINKSUNDER_DESKTOP_DATA: dataDirectory,
     LINKSUNDER_UPDATE_TEST_DEBUG_PORT: String(debugPort),
     LINKSUNDER_UPDATE_TEST_START_LOG: startupLogPath,
+    LINKSUNDER_UPDATE_TEST_STOP_FILE: stopFilePath,
     CI: 'true',
     LINKSUNDER_UPDATE_TEST_QUIT_LOG: quitLogPath,
     ...(platform === 'windows'
@@ -450,35 +468,38 @@ try {
   assert.equal(oldExit.code, 0, 'The previous app exited abnormally: ' + JSON.stringify(oldExit));
   await oldBrowser?.close().catch(() => {});
   oldBrowser = undefined;
-  const updated = await connectToUpdatedApp(debugPort);
-  updatedBrowser = updated.browser;
-  updatedPage = updated.page;
-  updatedAppConnected = true;
-  await updatedPage.getByRole('heading', { name: 'Build for the unexpected.' }).waitFor({ timeout: 60000 });
-  const finalState = await waitUntil('the installed version to change', () => updateState(updatedPage), (state) => state.currentVersion === currentVersion, 60000);
-  phase('verify the new version and retained settings');
+  phase('verify the installed v0.5.0 window and retained settings');
+  const startupEvents = await waitUntil(
+    'the updated renderer to report its version and preferences',
+    readUpdatedStartupEvents,
+    (events) => events.some((entry) => entry.event === 'window-verification' && entry.version === currentVersion),
+    90000,
+  );
+  const finalState = startupEvents.filter((entry) => entry.event === 'window-verification' && entry.version === currentVersion).at(-1);
   assert.equal(finalState.currentVersion, currentVersion);
   assert.equal(finalState.supported, true, 'The installed package must remain eligible for its next in-app update.');
-  assert.equal(new URL(updatedPage.url()).origin, originBeforeUpdate, 'The isolated engine should retain its saved local port and browser preferences.');
-  await waitUntil('the light appearance preference to survive the update', () => updatedPage.evaluate(() => document.documentElement.dataset.theme), (theme) => theme === 'light', 30000);
-  const persistedReport = await updatedPage.evaluate(async (id) => {
-    const response = await fetch(`/api/runs/${id}`);
-    return response.ok ? response.json() : undefined;
-  }, created.id);
+  assert.equal(finalState.url, originBeforeUpdate, 'The isolated engine should retain its saved local port.');
+  assert.equal(finalState.theme, 'light', 'The light appearance preference should survive the update.');
+  const persistedReport = await waitUntil(
+    'the previous report to remain available from the updated engine',
+    async () => {
+      try {
+        const response = await fetch(new URL(`/api/runs/${created.id}`, originBeforeUpdate), {
+          signal: globalThis.AbortSignal.timeout(3000),
+        });
+        return response.ok ? response.json() : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    (report) => report?.title === sentinel,
+    60000,
+  );
   assert.equal(persistedReport?.title, sentinel, 'The v0.4.0 report must remain available after installing v0.5.0.');
   phase(`cross-version update passed: v${oldVersion} -> v${currentVersion}; progress, cancel, byte-zero retry, verification, install, report and preference persistence`);
 } finally {
   phase('bounded isolated test cleanup');
-  await withTimeout('close the updated application', stopUpdatedApp(), 15000).catch((error) => console.warn(error.message));
-  if (!updatedAppConnected) {
-    const startupEvents = await readFile(startupLogPath, 'utf8').catch(() => '');
-    const started = startupEvents.split(/\r?\n/).map((line) => {
-      try { return JSON.parse(line); } catch { return undefined; }
-    }).filter((entry) => entry?.event === 'startup' && entry.version === currentVersion).at(-1);
-    if (Number.isInteger(started?.pid) && started.pid !== process.pid) {
-      try { process.kill(started.pid); } catch { /* The updated app may already have exited. */ }
-    }
-  }
+  await withTimeout('close the updated application', stopUpdatedApplication(), 20000).catch((error) => console.warn(error.message));
   if (oldBrowser) await withTimeout('disconnect the previous app window', oldBrowser.close(), 10000).catch(() => {});
   if (oldProcess && oldProcess.exitCode === null && oldProcess.signalCode === null) {
     const oldProcessExit = new Promise((resolve) => oldProcess.once('exit', resolve));
