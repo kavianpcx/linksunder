@@ -28,7 +28,7 @@ function recordUpdateTestStartup(event, details = {}) {
       debugPort: process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT,
       args: process.argv,
       ...details,
-    }) + '\\n');
+    }) + '\n');
   } catch {
     /* Diagnostics are optional and enabled only by the isolated updater integration test. */
   }
