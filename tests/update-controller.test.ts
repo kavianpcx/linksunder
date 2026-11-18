@@ -88,7 +88,7 @@ describe('desktop update workflow', () => {
     expect(controller.getState().message).toContain('running network inspection');
     expect(await controller.install()).toBe(true);
     expect(confirmInstall).toHaveBeenCalledOnce();
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
   });
 
   it('reports offline checks and up-to-date results without hanging', async () => {
