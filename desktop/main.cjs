@@ -2,7 +2,7 @@ const { app, BrowserWindow, dialog, utilityProcess, Menu, ipcMain, shell } = req
 const path = require('node:path');
 const fs = require('node:fs');
 const { URL } = require('node:url');
-const { setTimeout, clearTimeout } = require('node:timers');
+const { setTimeout, clearTimeout, setInterval, clearInterval } = require('node:timers');
 const net = require('node:net');
 const { autoUpdater } = require('electron-updater');
 const { CancellationToken } = require('builder-util-runtime');
@@ -25,8 +25,6 @@ function recordUpdateTestStartup(event, details = {}) {
       executable: process.execPath,
       appImage: process.env.APPIMAGE,
       appDir: process.env.APPDIR,
-      debugPort: process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT,
-      remoteDebuggingPort: app.commandLine.getSwitchValue('remote-debugging-port'),
       args: process.argv,
       ...details,
     }) + '\n');
@@ -35,15 +33,20 @@ function recordUpdateTestStartup(event, details = {}) {
   }
 }
 
+function watchForUpdateTestStop() {
+  const stopPath = process.env.LINKSUNDER_UPDATE_TEST_STOP_FILE;
+  if (process.env.CI !== 'true' || !stopPath) return;
+  const timer = setInterval(() => {
+    if (!fs.existsSync(stopPath)) return;
+    clearInterval(timer);
+    recordUpdateTestStartup('test-stop-requested');
+    app.quit();
+  }, 100);
+  timer.unref();
+}
+
 app.setName('LinkSunder');
 recordUpdateTestStartup('startup');
-if (process.env.CI === 'true' && process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT) {
-  const port = Number(process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT);
-  if (Number.isInteger(port) && port > 0 && port < 65536) {
-    app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
-    app.commandLine.appendSwitch('remote-debugging-port', String(port));
-  }
-}
 if (process.env.LINKSUNDER_DESKTOP_DATA)
   app.setPath('userData', process.env.LINKSUNDER_DESKTOP_DATA);
 if (process.platform === 'linux') {
@@ -55,6 +58,7 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 recordUpdateTestStartup('single-instance-lock', { acquired: hasSingleInstanceLock });
 if (!hasSingleInstanceLock) app.quit();
 else {
+  watchForUpdateTestStop();
   app.on('second-instance', () => {
     if (window?.isMinimized()) window.restore();
     window?.focus();
@@ -195,7 +199,25 @@ async function start() {
     window.show();
   });
   await window.loadURL(origin);
-  recordUpdateTestStartup('window-loaded', { url: window.webContents.getURL() });
+  const loadedUrl = window.webContents.getURL();
+  recordUpdateTestStartup('window-loaded', { url: loadedUrl });
+  if (process.env.CI === 'true' && process.env.LINKSUNDER_UPDATE_TEST_START_LOG) {
+    try {
+      const verification = await window.webContents.executeJavaScript(`(async () => {
+        const updateState = await window.linksunderDesktop.getUpdateState();
+        return {
+          url: location.origin,
+          theme: document.documentElement.dataset.theme,
+          currentVersion: updateState?.currentVersion,
+          supported: updateState?.supported,
+          status: updateState?.status,
+        };
+      })()`);
+      recordUpdateTestStartup('window-verification', verification);
+    } catch (error) {
+      recordUpdateTestStartup('window-verification-error', { message: error?.message || String(error) });
+    }
+  }
 }
 
 function restoreVersionedAppImagePath() {
