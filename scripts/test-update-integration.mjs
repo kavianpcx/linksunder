@@ -492,10 +492,10 @@ try {
         return undefined;
       }
     },
-    (report) => report?.title === sentinel,
+    (report) => report?.name === sentinel,
     60000,
   );
-  assert.equal(persistedReport?.title, sentinel, 'The v0.4.0 report must remain available after installing v0.5.0.');
+  assert.equal(persistedReport?.name, sentinel, 'The v0.4.0 report must remain available after installing v0.5.0.');
   phase(`cross-version update passed: v${oldVersion} -> v${currentVersion}; progress, cancel, byte-zero retry, verification, install, report and preference persistence`);
 } finally {
   phase('bounded isolated test cleanup');
