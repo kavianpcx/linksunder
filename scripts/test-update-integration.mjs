@@ -46,6 +46,8 @@ const watchdog = setTimeout(() => {
 }, 30 * 60 * 1000);
 
 const testRoot = await mkdtemp(path.join(tmpdir(), 'linksunder-update-integration-'));
+const quitLogPath = path.join(testRoot, 'update-quit-events.log');
+await writeFile(quitLogPath, '', 'utf8');
 assert.ok(path.resolve(testRoot).startsWith(path.resolve(tmpdir()) + path.sep));
 assert.ok(path.basename(testRoot).startsWith('linksunder-update-integration-'));
 const dataDirectory = path.join(testRoot, 'user-data');
@@ -262,6 +264,7 @@ try {
     LINKSUNDER_DESKTOP_DATA: dataDirectory,
     LINKSUNDER_UPDATE_TEST_DEBUG_PORT: String(debugPort),
     CI: 'true',
+    LINKSUNDER_UPDATE_TEST_QUIT_LOG: quitLogPath,
     ...(platform === 'windows'
       ? { LOCALAPPDATA: path.join(testRoot, 'local-app-data'), APPDATA: path.join(testRoot, 'roaming-app-data') }
       : {
@@ -326,6 +329,19 @@ try {
   assert.ok(feed.requests.length >= 2, 'Cancel and retry should issue separate package requests.');
   assert.equal(feed.requests[1].rangeStart, 0, 'A cancelled partial package must be discarded; retry must start at byte zero.');
 
+  await oldApp.evaluate(({ app }) => {
+    const fs = process.getBuiltinModule('node:fs');
+    const record = (event) => fs.appendFileSync(process.env.LINKSUNDER_UPDATE_TEST_QUIT_LOG, `${event}\\n`);
+    app.on('before-quit', () => record('before-quit'));
+    app.on('will-quit', () => record('will-quit'));
+    for (const method of ['quit', 'exit']) {
+      const original = app[method].bind(app);
+      app[method] = (...args) => {
+        record(`${method}(${args.join(',')})`);
+        return original(...args);
+      };
+    }
+  });
   await oldApp.evaluate(({ dialog }) => {
     dialog.showMessageBox = async () => ({ response: 1 });
   });
@@ -340,8 +356,8 @@ try {
   try {
     await oldAppClosed;
   } catch (error) {
-    const state = await updateState(page).catch((evaluationError) => ({ message: evaluationError.message }));
-    assert.fail(`The verified update did not close the previous app: ${JSON.stringify(state)}; ${error.message}`);
+    const events = await readFile(quitLogPath, 'utf8').catch((readError) => `Could not read quit events: ${readError.message}`);
+    assert.fail(`The verified update did not close the previous app. Quit events: ${events || '(none)'}; ${error.message}`);
   }
   const updated = await connectToUpdatedApp(debugPort);
   updatedBrowser = updated.browser;
