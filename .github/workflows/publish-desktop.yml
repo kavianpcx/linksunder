@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       build_run:
-        description: Successful Desktop packages run ID
+        description: Successful Desktop packages run ID from the validated main commit
         required: true
         type: string
 permissions:
@@ -27,18 +27,43 @@ jobs:
           gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN" > build.json
           jq -e '.name == "Desktop packages" and .status == "completed" and .conclusion == "success" and .head_branch == "main" and .event == "workflow_dispatch"' build.json
           echo "BUILD_SHA=$(jq -r .head_sha build.json)" >> "$GITHUB_ENV"
-      - name: Download verified packages
-        run: gh run download "$BUILD_RUN" --dir packages
-      - name: Fetch release notes from the tested commit
+      - name: Require the latest Windows and Linux CI checks for that commit
         run: |
           set -euo pipefail
-          gh api "repos/$GH_REPO/contents/docs/release-v0.3.0.md?ref=$BUILD_SHA" --jq .content | base64 --decode > notes.md
+          gh api "repos/$GH_REPO/commits/$BUILD_SHA/check-runs?per_page=100" > checks.json
+          for check in 'verify (ubuntu-latest)' 'verify (windows-latest)'; do
+            jq -e --arg check "$check" '[.check_runs[] | select(.name == $check)] | sort_by(.started_at) | last | .status == "completed" and .conclusion == "success"' checks.json
+          done
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Fetch authoritative version and matching release notes
+        run: |
+          set -euo pipefail
           gh api "repos/$GH_REPO/contents/package.json?ref=$BUILD_SHA" --jq .content | base64 --decode > package.json
           VERSION=$(jq -r .version package.json)
-          [[ "$VERSION" == "0.3.0" ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          RELEASE_NOTES="docs/release-v$VERSION.md"
+          gh api "repos/$GH_REPO/contents/$RELEASE_NOTES?ref=$BUILD_SHA" --jq .content | base64 --decode > notes.md
+          test -s notes.md
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "TAG=v$VERSION" >> "$GITHUB_ENV"
-      - name: Verify release is new and validate all package assets
+      - name: Download validated packages and updater metadata
+        run: gh run download "$BUILD_RUN" --dir packages
+      - name: Verify updater manifests against the exact package bytes
+        run: |
+          set -euo pipefail
+          win_manifest=$(find packages -type f -name latest.yml -print -quit)
+          linux_manifest=$(find packages -type f -name latest-linux.yml -print -quit)
+          [[ -n "$win_manifest" && $(find packages -type f -name latest.yml | wc -l) -eq 1 ]]
+          [[ -n "$linux_manifest" && $(find packages -type f -name latest-linux.yml | wc -l) -eq 1 ]]
+          node scripts/write-update-metadata.mjs verify windows "$(dirname "$win_manifest")"
+          node scripts/write-update-metadata.mjs verify linux "$(dirname "$linux_manifest")"
+      - name: Verify release is new and validate artifacts and update manifests
         run: |
           set -euo pipefail
           if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
@@ -61,9 +86,20 @@ jobs:
             count=$(find packages -type f -name "$name" | wc -l)
             [[ "$count" -eq 1 ]] || { echo "Expected exactly one $name, found $count."; exit 1; }
           done
-          sha256sum "${assets[@]}" > SHA256SUMS.txt
-      - name: Publish desktop release with all four downloads
+          for manifest in latest.yml latest-linux.yml; do
+            matches=$(find packages -type f -name "$manifest")
+            [[ $(printf '%s\n' "$matches" | sed '/^$/d' | wc -l) -eq 1 ]] || { echo "Expected exactly one $manifest updater manifest."; exit 1; }
+            grep -Eq "^version: $VERSION$" "$matches"
+            grep -Eq '^sha512: [A-Za-z0-9+/=]+$' "$matches"
+          done
+          mapfile -d '' update_metadata < <(find packages -type f \( -name 'latest.yml' -o -name 'latest-linux.yml' \) -print0)
+          : > SHA256SUMS.txt
+          for file in "${assets[@]}" "${update_metadata[@]}"; do
+            hash=$(sha256sum "$file" | cut -d ' ' -f1)
+            printf '%s  %s\n' "$hash" "$(basename "$file")" >> SHA256SUMS.txt
+          done
+      - name: Publish the verified release without replacing existing history
         run: |
           set -euo pipefail
-          mapfile -d '' assets < <(find packages -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.deb' -o -name '*.AppImage' \) -print0)
+          mapfile -d '' assets < <(find packages -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.deb' -o -name '*.AppImage' -o -name 'latest.yml' -o -name 'latest-linux.yml' \) -print0)
           gh release create "$TAG" --target "$BUILD_SHA" --title "LinkSunder $TAG — desktop applications" --notes-file notes.md "${assets[@]}" SHA256SUMS.txt

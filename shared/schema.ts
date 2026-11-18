@@ -41,6 +41,7 @@ export interface StepResult {
 export interface Run {
   id: string;
   name: string;
+  targetHost?: string;
   type: string;
   status: Status;
   started: string;

@@ -1,8 +1,9 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { ArrowRight, Check, Download, Globe2, LockKeyhole, Network, ShieldAlert, X } from 'lucide-react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { ArrowRight, Check, Download, Globe2, LoaderCircle, LockKeyhole, Play, ShieldAlert, ShieldCheck, Square, X } from 'lucide-react';
 import { COMMON_PORTS, type HttpCheck, type NetworkReport } from '../shared/network';
 import { api } from './api';
 import { SelectField } from './SelectField';
+import { formatRunTimestamp } from './format-run-timestamp';
 
 const PORT_PRESETS: Record<string, number[]> = {
   common: [...COMMON_PORTS],
@@ -32,12 +33,37 @@ interface NetworkInspectorProps {
   onOpenHistory: () => void;
 }
 
+function httpBadge(check: HttpCheck) {
+  if (check.status === undefined) {
+    if (check.error?.startsWith('No HTTP response within')) return { className: 'warn', label: 'Timed out' };
+    if (check.error?.startsWith('Cancelled')) return { className: 'warn', label: 'Cancelled' };
+    return { className: check.error ? 'error' : '', label: check.error ? 'Transport error' : 'Unknown' };
+  }
+  if (check.status >= 200 && check.status < 300) return { className: 'pass', label: `HTTP ${check.status} · success` };
+  if (check.status >= 300 && check.status < 400) return { className: 'warn', label: `HTTP ${check.status} · redirect` };
+  if (check.status >= 400 && check.status < 500) return { className: 'error', label: `HTTP ${check.status} · client error` };
+  if (check.status >= 500 && check.status < 600) return { className: 'error', label: `HTTP ${check.status} · server error` };
+  return { className: 'warn', label: `HTTP ${check.status} · informational` };
+}
+
+function validNetworkTarget(value: string) {
+  const target = value.trim();
+  if (!target || target.length > 500 || /\s/.test(target)) return false;
+  try {
+    const url = new URL(/^[a-z][a-z\d+.-]*:/i.test(target) ? target : `http://${target}`);
+    return ['http:', 'https:'].includes(url.protocol) && Boolean(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 function renderHttpCheck(check: HttpCheck) {
+  const badge = httpBadge(check);
   return (
     <article className="http-card" key={check.scheme}>
       <div className="http-card-head">
         <h3>{check.scheme.toUpperCase()}</h3>
-        {check.status !== undefined ? <span className="badge pass">HTTP {check.status}</span> : <span className="badge error">No response</span>}
+        <span className={`badge ${badge.className}`} title={check.error}>{badge.label}</span>
       </div>
       <p className="mono-line">{check.finalUrl || 'No final URL recorded'} · {check.responseTimeMs ?? '—'} ms</p>
       {check.error && <p className="inline-warning">{check.error}</p>}
@@ -69,6 +95,9 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
   const [authorized, setAuthorized] = useState(false);
   const [current, setCurrent] = useState<NetworkReport | undefined>(initialReport);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [cancelling, setCancelling] = useState(false);
+  const cancellingRef = useRef(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -84,7 +113,11 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
         if (!live) return;
         setCurrent(report);
         onReportChange(report);
-        if (report.status !== 'running') await onRefresh();
+        if (report.status !== 'running') {
+          cancellingRef.current = false;
+          setCancelling(false);
+          await onRefresh();
+        }
       } catch (reason) {
         if (live) setError((reason as Error).message);
       }
@@ -108,11 +141,13 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
 
   async function startInspection(event: FormEvent) {
     event.preventDefault();
+    if (busyRef.current || current?.status === 'running') return;
     setError('');
     if (!authorized) {
       setError('Confirm that you own or are authorized to inspect this system.');
       return;
     }
+    busyRef.current = true;
     setBusy(true);
     try {
       const report = await api<NetworkReport>('/api/network/scans', {
@@ -126,14 +161,20 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
 
   async function cancelInspection() {
+    if (cancellingRef.current) return;
+    cancellingRef.current = true;
+    setCancelling(true);
     try {
       await api('/api/network/cancel', {});
     } catch (reason) {
+      cancellingRef.current = false;
+      setCancelling(false);
       setError((reason as Error).message);
     }
   }
@@ -141,6 +182,11 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
   const openPorts = current?.ports.filter((port) => port.status === 'OPEN') ?? [];
   const addresses = current ? [...current.dns.A, ...current.dns.AAAA] : [];
   const completed = Boolean(current && current.status !== 'running');
+  const targetValid = validNetworkTarget(target);
+  const operationActive = busy || current?.status === 'running';
+  const customPortsValid = (() => {
+    try { selectedPorts(); return true; } catch { return false; }
+  })();
 
   return (
     <>
@@ -160,34 +206,47 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
         </div>
         <label>
           Domain, IP address, or URL
-          <input aria-label="Network inspection target" autoComplete="url" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="example.com · 192.168.1.20 · https://example.com/health" required maxLength={500} />
+          <input aria-label="Network inspection target" autoComplete="url" value={target} disabled={operationActive} onChange={(event) => {
+            const nextTarget = event.target.value;
+            setTarget(nextTarget);
+            if (nextTarget !== target) {
+              setAuthorized(false);
+              setError('');
+              setCurrent(undefined);
+              onReportChange(undefined);
+            }
+          }} placeholder="example.com · 192.168.1.20 · https://example.com/health" required maxLength={500} />
           <span className="hint">Query strings and fragments are removed before a check and are never saved.</span>
         </label>
         <div className="columns">
-          <SelectField label="TCP port preset" value={preset} options={PORT_PRESET_OPTIONS} onChange={setPreset} />
-          <SelectField label="Connection timeout" value={String(timeout)} options={TIMEOUT_OPTIONS} onChange={(value) => setTimeout(Number(value))} />
+          <SelectField label="TCP port preset" value={preset} options={PORT_PRESET_OPTIONS} onChange={setPreset} disabled={operationActive} />
+          <SelectField label="Connection timeout" value={String(timeout)} options={TIMEOUT_OPTIONS} onChange={(value) => setTimeout(Number(value))} disabled={operationActive} />
         </div>
-        {preset === 'custom' && <label>Custom TCP ports (comma separated)<input aria-label="Custom TCP ports" inputMode="numeric" value={customPorts} onChange={(event) => setCustomPorts(event.target.value)} placeholder="80, 443, 8080" /><span className="hint">Enter up to 20 unique ports from 1 to 65535.</span></label>}
+        {preset === 'custom' && <label>Custom TCP ports (comma separated)<input aria-label="Custom TCP ports" inputMode="numeric" value={customPorts} disabled={operationActive} onChange={(event) => setCustomPorts(event.target.value)} placeholder="80, 443, 8080" /><span className="hint">Enter up to 20 unique ports from 1 to 65535.</span></label>}
         <label className="checkbox authorization-check">
-          <input type="checkbox" checked={authorized} onChange={(event) => setAuthorized(event.target.checked)} />
-          I own this system or have explicit permission to inspect it.
+          <input type="checkbox" checked={authorized} disabled={operationActive} aria-describedby="network-authorization-help" onChange={(event) => setAuthorized(event.target.checked)} />
+          I own this server or have permission to test it.
         </label>
+        <p id="network-authorization-help" className="permission-hint" role="note">
+          <ShieldCheck size={15} aria-hidden="true" />
+          Confirm that you own or have permission to test this target before starting.
+        </p>
         <p className="consent-note">Each selected port receives a short TCP connection attempt. HTTP checks send HEAD requests only. This tool does not exploit services, authenticate, or scan ranges.</p>
         <div className="buttons inspector-actions">
-          <button className="primary" disabled={busy || current?.status === 'running' || !target.trim() || !authorized}>
-            <Network size={16} /> {busy || current?.status === 'running' ? 'Inspection running…' : 'Start network check'}
+          <button className="primary" disabled={operationActive || !targetValid || !authorized || !customPortsValid} aria-describedby="network-authorization-help" aria-busy={operationActive}>
+            {busy || current?.status === 'running' ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
+            {busy ? 'Starting scan…' : current?.status === 'running' ? 'Scan running…' : 'Start Scan'}
           </button>
-          {current?.status === 'running' && <button type="button" className="secondary" onClick={() => void cancelInspection()}>Cancel check</button>}
           {completed && <button type="button" className="secondary" onClick={() => { setCurrent(undefined); onReportChange(undefined); }}>New check</button>}
         </div>
       </form>
 
       {current && <section className="inspector-report" aria-live="polite">
-        {current.status === 'running' && <div className="panel scan-progress" role="status"><span className="spinner" /><div><strong>Checking {current.hostname}</strong><p>{current.progress}</p></div><button className="secondary" onClick={() => void cancelInspection()}>Cancel</button></div>}
+        {current.status === 'running' && <div className="panel scan-progress"><span className="spinner" /><div><strong>Checking {current.hostname}</strong><p role="status" aria-live="polite">{current.progress}</p></div><button type="button" className="secondary" onClick={() => void cancelInspection()} disabled={cancelling} aria-busy={cancelling}>{cancelling ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Square size={15} aria-hidden="true" />}{cancelling ? 'Stopping…' : 'Cancel scan'}</button></div>}
         {current.error && current.status !== 'running' && <div className={current.status === 'error' ? 'alert' : 'notice'}>{current.error}</div>}
         {completed && <>
           <div className="heading compact-heading">
-            <div><div className="eyebrow">INSPECTION REPORT</div><h2>{current.target}</h2><p>{new Date(current.started).toLocaleString()} · {current.status === 'complete' ? 'Completed' : current.status}</p></div>
+              <div><div className="eyebrow">INSPECTION REPORT</div><h2>{current.target}</h2><p>{formatRunTimestamp(current.started)} · {current.status === 'complete' ? 'Completed' : current.status}</p></div>
             <div className="buttons">
               <a className="secondary" href={`/api/network/reports/${current.id}/json`}><Download size={15} /> JSON</a>
               <a className="secondary" href={`/api/network/reports/${current.id}/html`}><Download size={15} /> HTML</a>
@@ -203,6 +262,11 @@ export function NetworkInspector({ initialReport, onReportChange, onRefresh, onO
           <section className="panel form report-section"><h2>DNS summary</h2><p className="hint">System resolver · {current.dns.lookupTimeMs} ms</p><div className="record-grid">
             <div><span>A records</span><strong>{current.dns.A.join(', ') || '—'}</strong></div><div><span>AAAA records</span><strong>{current.dns.AAAA.join(', ') || '—'}</strong></div><div><span>CNAME</span><strong>{current.dns.CNAME.join(', ') || '—'}</strong></div><div><span>Name servers</span><strong>{current.dns.NS.join(', ') || '—'}</strong></div><div><span>Mail servers</span><strong>{current.dns.MX.map((record) => `${record.exchange} (${record.priority})`).join(', ') || '—'}</strong></div><div><span>Reverse lookup</span><strong>{current.dns.reverse.map((record) => `${record.address}: ${record.names.join(', ')}`).join('; ') || '—'}</strong></div>
           </div>{current.dns.note && <p className="hint">{current.dns.note}</p>}</section>
+          <section className="panel form report-section"><h2>Approximate IP location</h2>
+            <p className="hint">Uses only the local database files selected in Settings. IPs are not sent to a geolocation service. Results can differ for CDNs, anycast, proxies, VPNs, and shared networks.</p>
+            {current.geolocation?.length ? <div className="tablewrap"><table><thead><tr><th>IP address</th><th>Estimated location</th><th>ASN and organization</th><th>Database</th></tr></thead><tbody>{current.geolocation.map((item) => <tr key={item.ip}><td className="mono">{item.ip}</td><td>{item.status === 'private' ? 'Private or reserved address' : item.status === 'unavailable' ? 'Local database unavailable' : item.status === 'not-found' ? 'Unknown' : [item.city, item.region, item.country, item.countryCode].filter(Boolean).join(', ') || 'Unknown'}{item.status === 'found' && item.accuracyRadiusKm !== undefined && <small className="geo-subline">Accuracy radius about {item.accuracyRadiusKm} km</small>}{item.timeZone && <small className="geo-subline">Estimated time zone: {item.timeZone}</small>}</td><td>{item.asn ? `AS${item.asn}` : '—'}{item.organization && <small className="geo-subline">{item.organization}</small>}</td><td>{item.source || '—'}{item.cityDatabaseDate && <small className="geo-subline">City: {new Date(item.cityDatabaseDate).toLocaleDateString()}</small>}{item.asnDatabaseDate && <small className="geo-subline">ASN: {new Date(item.asnDatabaseDate).toLocaleDateString()}</small>}</td></tr>)}</tbody></table></div> : <p className="empty-line">No local geolocation database is configured. Choose optional City and ASN .mmdb files in Settings to see available estimates.</p>}
+            <p className="hint">IP location is approximate and cannot prove a server's physical location. It must not be used to identify a household. Time zone is an estimate from the database, not a confirmed server time zone.</p>
+          </section>
           <section className="panel form report-section"><h2>TCP port results</h2><p className="hint">Connection acceptance shows reachability only; a port is not automatically a vulnerability.</p><div className="tablewrap"><table><thead><tr><th>Port</th><th>Protocol</th><th>Status</th><th>Time</th><th>Note</th></tr></thead><tbody>{current.ports.map((port) => <tr key={port.port}><td>{port.port}</td><td>{port.protocol}</td><td><span className={`badge port-${port.status.toLowerCase()}`}>{port.status}</span></td><td>{port.durationMs ?? '—'} ms</td><td>{port.note}</td></tr>)}</tbody></table></div></section>
           <section className="panel form report-section"><h2>HTTP / HTTPS</h2><div className="http-results">{current.http.length ? current.http.map(renderHttpCheck) : <p>No HTTP response recorded.</p>}</div></section>
           <section className="panel form report-section"><h2>TLS certificate</h2>{current.tls ? <div className="record-grid"><div><span>Subject</span><strong>{current.tls.subject || '—'}</strong></div><div><span>Issuer</span><strong>{current.tls.issuer || '—'}</strong></div><div><span>Validity</span><strong>{current.tls.validFrom || '—'} — {current.tls.validTo || '—'}</strong></div><div><span>Protocol</span><strong>{current.tls.protocol || '—'}</strong></div><div><span>Names (SAN)</span><strong>{current.tls.subjectAltNames.join(', ') || '—'}</strong></div><div><span>Fingerprint SHA-256</span><strong>{current.tls.fingerprint256 || '—'}</strong></div><div><span>Certificate status</span><strong>{current.tls.hostnameMismatch ? 'Hostname mismatch' : current.tls.selfSigned ? 'Self-signed' : current.tls.authorized ? 'Trusted by system' : current.tls.error || 'Could not verify trust'}</strong></div></div> : <p className="hint">TLS was not checked because no HTTPS port was selected or identified.</p>}{current.tls?.error && <p className="hint">{current.tls.error}</p>}</section>

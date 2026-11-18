@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile, unlink } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 const appURL = `http://127.0.0.1:${process.env.LINKSUNDER_E2E_PORT || '4317'}`;
@@ -165,9 +168,83 @@ test('builds and runs an assertion through the no-code UI', async ({ page }) => 
   await savedScenarios.press('m');
   await savedScenarios.press('Enter');
   await expect(page.getByLabel('Step 1 selector')).toHaveValue('#note');
+  await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
   await page.getByRole('button', { name: 'Run Test', exact: true }).click();
   await expect(page.getByRole('link', { name: 'Download JSON Report' })).toBeVisible();
   await expect(page.locator('.heading .badge')).toHaveText('pass');
+});
+
+test('authorization gates scenario and network actions and resets after target changes', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New test', exact: true }).click();
+  const scenarioTarget = page.getByLabel('Website URL');
+  await scenarioTarget.fill(`${appURL}/demo/fixed`);
+  const scenarioConsent = page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' });
+  const runButton = page.getByRole('button', { name: 'Run Test', exact: true });
+  await expect(runButton).toBeDisabled();
+  await expect(page.getByText('Confirm that you own or have permission to test this target before starting.')).toBeVisible();
+  await expect(scenarioConsent).toHaveAttribute('aria-describedby', 'scenario-authorization-help');
+  await scenarioConsent.focus();
+  await scenarioConsent.press('Space');
+  await expect(runButton).toBeEnabled();
+  await scenarioTarget.fill(`${appURL}/demo/broken`);
+  await expect(scenarioConsent).not.toBeChecked();
+  await expect(runButton).toBeDisabled();
+  await page.getByRole('button', { name: 'Light appearance' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(runButton).toBeDisabled();
+
+  await page.getByRole('navigation').getByRole('button', { name: 'Network Inspector' }).click();
+  const networkTarget = page.getByLabel('Network inspection target');
+  const scanConsent = page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' });
+  const scanButton = page.getByRole('button', { name: 'Start Scan', exact: true });
+  await networkTarget.fill('127.0.0.1');
+  await expect(scanButton).toBeDisabled();
+  await expect(page.getByText('Confirm that you own or have permission to test this target before starting.')).toBeVisible();
+  await scanConsent.focus();
+  await scanConsent.press('Space');
+  await expect(scanButton).toBeEnabled();
+  await networkTarget.fill(`127.0.0.1:${appPort}`);
+  await expect(scanConsent).not.toBeChecked();
+  await expect(scanButton).toBeDisabled();
+  await page.getByRole('button', { name: 'Dark appearance' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations).toEqual([]);
+});
+
+test('Scenario Builder starts a real run and cancels it accessibly', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New test', exact: true }).click();
+  await page.getByLabel('Scenario name').fill('Cancelable delayed request');
+  await page.getByLabel('Website URL').fill(`${appURL}/demo/fixed`);
+  await page.getByRole('button', { name: 'Add first step' }).click();
+
+  const delayAction = page.getByRole('combobox', { name: 'Step 1 action' });
+  await delayAction.click();
+  await page.getByRole('option', { name: 'Delay API Response' }).click();
+  await page.getByLabel('API path').fill('/demo/api/messages');
+  await page.getByRole('spinbutton', { name: 'Delay milliseconds' }).fill('15000');
+  await page.getByRole('button', { name: 'Add step' }).click();
+  const clickAction = page.getByRole('combobox', { name: 'Step 2 action' });
+  await clickAction.click();
+  await page.getByRole('option', { name: 'Click' }).click();
+  await page.getByLabel('Step 2 selector').fill('#send');
+  await page.getByRole('button', { name: 'Add step' }).click();
+  const checkAction = page.getByRole('combobox', { name: 'Step 3 action' });
+  await checkAction.click();
+  await page.getByRole('option', { name: 'Check Element', exact: true }).click();
+  await page.getByLabel('Step 3 selector').fill('#status[data-state="success"]');
+  await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
+
+  const started = page.waitForResponse((response) => response.url().endsWith('/api/runs') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Run Test', exact: true }).click();
+  const run = await (await started).json() as { id: string };
+  await expect(page.getByRole('button', { name: 'Cancel run', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel run', exact: true }).focus();
+  await expect(page.getByRole('button', { name: 'Cancel run', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Cancel run', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled();
+  await expect.poll(async () => (await page.request.get(`${appURL}/api/runs/${run.id}`).then((response) => response.json())).status).toBe('cancelled');
 });
 test('duplicates a scenario step, keeps focus predictable, and edits independently at 390px', async ({
   page,
@@ -238,6 +315,39 @@ test('serializes runs and cancels a pending browser', async ({ request }) => {
     .toBe('cancelled');
 });
 
+test('reserves execution admission across simultaneous run and network requests', async ({ request }) => {
+  const headers = { 'X-LinkSunder': 'local' };
+  const [firstRun, secondRun, networkScan] = await Promise.all([
+    request.post('/api/runs', {
+      headers,
+      data: { name: 'Concurrent admission one', url: `${appURL}/demo/fixed`, externalConsent: true, steps: [{ action: 'check', selector: '#never' }] },
+    }),
+    request.post('/api/runs', {
+      headers,
+      data: { name: 'Concurrent admission two', url: `${appURL}/demo/fixed`, externalConsent: true, steps: [{ action: 'check', selector: '#never' }] },
+    }),
+    request.post('/api/network/scans', {
+      headers,
+      data: { target: '127.0.0.1', ports: [appPort], timeout: 3000, authorized: true },
+    }),
+  ]);
+  const accepted = [firstRun, secondRun, networkScan].filter((response) => response.status() === 200);
+  const rejected = [firstRun, secondRun, networkScan].filter((response) => response.status() === 409);
+  expect(accepted).toHaveLength(1);
+  expect(rejected).toHaveLength(2);
+
+  const headersForCancel = { 'X-LinkSunder': 'local' };
+  if (accepted[0] === networkScan) {
+    const report = await networkScan.json();
+    await request.post('/api/network/cancel', { headers: headersForCancel, data: {} });
+    await expect.poll(async () => (await request.get(`/api/network/reports/${report.id}`).then((response) => response.json())).status).toBe('cancelled');
+  } else {
+    const run = await accepted[0].json();
+    await request.post('/api/cancel', { headers: headersForCancel, data: {} });
+    await expect.poll(async () => (await request.get(`/api/runs/${run.id}`).then((response) => response.json())).status).toBe('cancelled');
+  }
+});
+
 test('inspects a local authorized target and exports JSON and HTML reports', async ({ page, request }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/');
@@ -246,12 +356,17 @@ test('inspects a local authorized target and exports JSON and HTML reports', asy
   await page.getByRole('combobox', { name: 'TCP port preset' }).click();
   await page.getByRole('option', { name: 'Custom list (up to 20)' }).click();
   await page.getByLabel('Custom TCP ports').fill(String(appPort));
-  await page.getByRole('checkbox', { name: 'I own this system or have explicit permission to inspect it.' }).check();
-  await page.getByRole('button', { name: 'Start network check' }).click();
+  const authorization = page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' });
+  const startScan = page.getByRole('button', { name: 'Start Scan', exact: true });
+  await expect(startScan).toBeDisabled();
+  await expect(page.getByText('Confirm that you own or have permission to test this target before starting.')).toBeVisible();
+  await authorization.check();
+  await expect(startScan).toBeEnabled();
+  await startScan.click();
   await expect(page.getByRole('heading', { name: 'DNS summary' })).toBeVisible({ timeout: 15000 });
   await expect(page.locator('.compact-heading h2')).toHaveText(`http://127.0.0.1:${appPort}/demo/fixed`);
-  const reports = await request.get('/api/network/reports').then((response) => response.json());
-  const report = reports[0];
+  const reports = await request.get('/api/history?kind=network&page=1&pageSize=10').then((response) => response.json());
+  const report = await request.get(`/api/network/reports/${reports.items[0].id}`).then((response) => response.json());
   expect(report.status).toBe('complete');
   expect(report.target).not.toContain('secret');
   expect(report.tls).toBeUndefined();
@@ -273,6 +388,75 @@ test('inspects a local authorized target and exports JSON and HTML reports', asy
   await page.screenshot({ path: 'docs/screenshots/network-inspector.png', fullPage: true });
 });
 
+test('Network Inspector starts a local authorized scan and cancels while HTTP is pending', async ({ page }) => {
+  let responseTimer: NodeJS.Timeout | undefined;
+  const delayedServer = createServer((_request, response) => {
+    responseTimer = setTimeout(() => response.writeHead(200, { 'content-type': 'text/plain' }).end('ready'), 10000);
+    response.once('close', () => {
+      if (responseTimer) clearTimeout(responseTimer);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    delayedServer.once('error', reject);
+    delayedServer.listen(0, '127.0.0.1', resolve);
+  });
+  const port = (delayedServer.address() as AddressInfo).port;
+  try {
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Network Inspector' }).click();
+    await page.getByLabel('Network inspection target').fill(`http://127.0.0.1:${port}/slow`);
+    await page.getByRole('combobox', { name: 'TCP port preset' }).click();
+    await page.getByRole('option', { name: 'Custom list (up to 20)' }).click();
+    await page.getByLabel('Custom TCP ports').fill(String(port));
+    await page.getByRole('combobox', { name: 'Connection timeout' }).click();
+    await page.getByRole('option', { name: '3 seconds · slower networks' }).click();
+    await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
+    const started = page.waitForResponse((response) => response.url().endsWith('/api/network/scans') && response.request().method() === 'POST');
+    await page.getByRole('button', { name: 'Start Scan', exact: true }).click();
+    const report = await (await started).json() as { id: string };
+    await expect(page.getByRole('button', { name: 'Cancel scan', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Cancel scan', exact: true }).focus();
+    await expect(page.getByRole('button', { name: 'Cancel scan', exact: true })).toBeFocused();
+    await page.getByRole('button', { name: 'Cancel scan', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Stopping…', exact: true })).toBeDisabled();
+    await expect.poll(async () => (await page.request.get(`${appURL}/api/network/reports/${report.id}`).then((response) => response.json())).status).toBe('cancelled');
+  } finally {
+    if (responseTimer) clearTimeout(responseTimer);
+    await new Promise<void>((resolve, reject) => delayedServer.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('Network Inspector distinguishes HTTP client and server errors from successful responses', async ({ page }) => {
+  const statusServer = createServer((request, response) => {
+    const status = request.url?.startsWith('/not-found') ? 404 : 503;
+    response.writeHead(status, { 'content-type': 'text/plain' }).end('controlled response');
+  });
+  await new Promise<void>((resolve, reject) => {
+    statusServer.once('error', reject);
+    statusServer.listen(0, '127.0.0.1', resolve);
+  });
+  const port = (statusServer.address() as AddressInfo).port;
+  try {
+    await page.goto('/');
+    await page.getByRole('navigation').getByRole('button', { name: 'Network Inspector' }).click();
+    const target = page.getByLabel('Network inspection target');
+    await target.fill(`http://127.0.0.1:${port}/not-found`);
+    await page.getByRole('combobox', { name: 'TCP port preset' }).click();
+    await page.getByRole('option', { name: 'Custom list (up to 20)' }).click();
+    await page.getByLabel('Custom TCP ports').fill(String(port));
+    await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
+    await page.getByRole('button', { name: 'Start Scan', exact: true }).click();
+    await expect(page.locator('.http-results .badge.error')).toHaveText('HTTP 404 · client error');
+
+    await target.fill(`http://127.0.0.1:${port}/server-error`);
+    await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
+    await page.getByRole('button', { name: 'Start Scan', exact: true }).click();
+    await expect(page.locator('.http-results .badge.error')).toHaveText('HTTP 503 · server error');
+  } finally {
+    await new Promise<void>((resolve, reject) => statusServer.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test('copies report storage safely and keeps source reports intact', async ({ request }) => {
   const originalInfo = await request.get('/api/info').then((response) => response.json());
   const oldFiles = await readdir(originalInfo.reportDirectory);
@@ -284,11 +468,19 @@ test('copies report storage safely and keeps source reports intact', async ({ re
       headers: { 'X-LinkSunder': 'local' },
       data: { path: destination },
     });
-    expect(response.ok()).toBe(true);
-    const result = await response.json();
-    expect(result.reportDirectory).toBe(destination);
-    expect(result.copied).toBeGreaterThan(0);
-    expect(result.originalsKept).toBe(true);
+    expect(response.status()).toBe(202);
+    const started = await response.json() as { id: string; status: string };
+    expect(started.status).toBe('running');
+    const runDuringMigration = await request.post('/api/runs', {
+      headers: { 'X-LinkSunder': 'local' },
+      data: { name: 'Blocked during storage move', url: `${appURL}/demo/fixed`, externalConsent: true },
+    });
+    expect(runDuringMigration.status()).toBe(409);
+    await expect.poll(async () => request.get(`/api/settings/report-directory/${started.id}`).then((job) => job.json().then((body) => body.status))).toBe('complete');
+    const result = await request.get(`/api/settings/report-directory/${started.id}`).then((job) => job.json());
+    expect(result.result.reportDirectory).toBe(destination);
+    expect(result.result.copied).toBeGreaterThan(0);
+    expect(result.result.originalsKept).toBe(true);
     switched = true;
     expect((await readdir(destination)).length).toBeGreaterThan(0);
     expect((await readdir(originalInfo.reportDirectory)).length).toBeGreaterThan(0);
@@ -297,27 +489,64 @@ test('copies report storage safely and keeps source reports intact', async ({ re
       data: { path: originalInfo.reportDirectory },
     });
     expect(restore.ok()).toBe(true);
+    if (restore.status() === 202) {
+      const restoreJob = await restore.json() as { id: string };
+      await expect.poll(async () => request.get(`/api/settings/report-directory/${restoreJob.id}`).then((job) => job.json().then((body) => body.status))).toBe('complete');
+    }
     switched = false;
   } finally {
     if (switched) {
-      await request.post('/api/settings/report-directory', {
+      const restore = await request.post('/api/settings/report-directory', {
         headers: { 'X-LinkSunder': 'local' },
         data: { path: originalInfo.reportDirectory },
       });
+      if (restore.status() === 202) {
+        const restoreJob = await restore.json() as { id: string };
+        await expect.poll(async () => request.get(`/api/settings/report-directory/${restoreJob.id}`).then((job) => job.json().then((body) => body.status))).toBe('complete');
+      }
     }
     await rm(destination, { recursive: true, force: true });
   }
 });
 
+test('cancels a report folder migration without switching away from the original folder', async ({ request }) => {
+  const originalInfo = await request.get('/api/info').then((response) => response.json());
+  const destination = await mkdtemp(path.join(os.tmpdir(), 'linksunder-e2e-storage-cancel-'));
+  const slowFixture = path.join(originalInfo.reportDirectory, `${randomUUID()}.json`);
+  try {
+    await writeFile(slowFixture, Buffer.alloc(24 * 1024 * 1024, 120));
+    const startedResponse = await request.post('/api/settings/report-directory', {
+      headers: { 'X-LinkSunder': 'local' },
+      data: { path: destination },
+    });
+    expect(startedResponse.status()).toBe(202);
+    const started = await startedResponse.json() as { id: string };
+    const cancel = await request.post(`/api/settings/report-directory/${started.id}/cancel`, {
+      headers: { 'X-LinkSunder': 'local' },
+    });
+    expect(cancel.ok()).toBe(true);
+    await expect.poll(async () => request.get(`/api/settings/report-directory/${started.id}`).then((job) => job.json().then((body) => body.status))).toBe('cancelled');
+    const info = await request.get('/api/info').then((response) => response.json());
+    expect(info.reportDirectory).toBe(originalInfo.reportDirectory);
+  } finally {
+    await unlink(slowFixture).catch(() => {});
+    await rm(destination, { recursive: true, force: true });
+  }
+});
+
 test('deletes a single report only after confirmation', async ({ page, request }) => {
-  const runs = await request.get('/api/runs').then((response) => response.json());
-  const selected = runs.find((run: { status: string }) => run.status !== 'running');
-  expect(selected).toBeTruthy();
+  const started = await request.post('/api/runs', {
+    headers: { 'X-LinkSunder': 'local' },
+    data: { name: `Single delete ${Date.now()}`, url: `${appURL}/demo/fixed`, externalConsent: true },
+  }).then((response) => response.json()) as { id: string };
+  await expect.poll(async () => (await request.get(`/api/runs/${started.id}`).then((response) => response.json())).status).not.toBe('running');
+  const selected = await request.get(`/api/runs/${started.id}`).then((response) => response.json()) as { id: string; name: string };
+  const selectedTitle = selected.name;
   await page.goto('/');
   await page.getByRole('button', { name: 'Reports & history' }).click();
   await expect(page.getByRole('heading', { name: 'Reports & history' })).toBeVisible();
-  await page.getByRole('button', { name: `Delete report ${selected.name}` }).click();
-  await expect(page.getByRole('dialog')).toContainText('permanently removes');
+  await page.getByRole('button', { name: `Delete report ${selectedTitle}` }).click();
+  await expect(page.getByRole('dialog')).toContainText('This removes report files');
   await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(page.getByRole('button', { name: 'Delete reports' })).toBeFocused();
@@ -327,39 +556,54 @@ test('deletes a single report only after confirmation', async ({ page, request }
   await expect(page.getByRole('button', { name: 'Delete reports' })).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: `Delete report ${selected.name}` })).toBeFocused();
+  await expect(page.getByRole('button', { name: `Delete report ${selectedTitle}` })).toBeFocused();
   expect((await request.get(`/api/runs/${selected.id}`)).status()).toBe(200);
-  await page.getByRole('button', { name: `Delete report ${selected.name}` }).click();
+  await page.getByRole('button', { name: `Delete report ${selectedTitle}` }).click();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   expect((await request.get(`/api/runs/${selected.id}`)).status()).toBe(200);
-  await page.getByRole('button', { name: `Delete report ${selected.name}` }).click();
+  await page.getByRole('button', { name: `Delete report ${selectedTitle}` }).click();
   await page.getByRole('button', { name: 'Delete reports' }).click();
-  await expect(page.getByRole('status')).toContainText('1 report deleted');
+  await expect(page.locator('.notice[role="status"]')).toContainText('1 report deleted');
   expect((await request.get(`/api/runs/${selected.id}`)).status()).toBe(404);
 });
 
 test('bulk deletion and clear-all history require confirmation', async ({ page, request }) => {
+  const runStart = await request.post('/api/runs', {
+    headers: { 'X-LinkSunder': 'local' },
+    data: { name: `Bulk delete ${Date.now()}`, url: `${appURL}/demo/fixed`, externalConsent: true },
+  }).then((response) => response.json()) as { id: string };
+  await expect.poll(async () => (await request.get(`/api/runs/${runStart.id}`).then((response) => response.json())).status).not.toBe('running');
+  const networkStart = await request.post('/api/network/scans', {
+    headers: { 'X-LinkSunder': 'local' },
+    data: { target: '127.0.0.1', ports: [appPort], timeout: 1200, authorized: true },
+  }).then((response) => response.json()) as { id: string };
+  await expect.poll(async () => (await request.get(`/api/network/reports/${networkStart.id}`).then((response) => response.json())).status).not.toBe('running');
+  const keepStart = await request.post('/api/runs', {
+    headers: { 'X-LinkSunder': 'local' },
+    data: { name: `Clear all remains ${Date.now()}`, url: `${appURL}/demo/fixed`, externalConsent: true },
+  }).then((response) => response.json()) as { id: string };
+  await expect.poll(async () => (await request.get(`/api/runs/${keepStart.id}`).then((response) => response.json())).status).not.toBe('running');
   const runs = await request.get('/api/runs').then((response) => response.json());
   const network = await request.get('/api/network/reports').then((response) => response.json());
   const available = [
-    ...runs.filter((run: { status: string }) => run.status !== 'running').map((run: { id: string; name: string }) => ({ ...run, kind: 'run' })),
-    ...network.filter((report: { status: string }) => report.status !== 'running').map((report: { id: string; hostname: string }) => ({ ...report, name: report.hostname, kind: 'network' })),
+    ...runs.filter((run: { status: string }) => run.status !== 'running').map((run: { id: string; title: string }) => ({ ...run, kind: 'run' })),
+    ...network.filter((report: { status: string }) => report.status !== 'running').map((report: { id: string; title: string }) => ({ ...report, kind: 'network' })),
   ];
-  expect(available.length).toBeGreaterThanOrEqual(2);
+  expect(available.length).toBeGreaterThanOrEqual(3);
   await page.goto('/');
   await page.getByRole('button', { name: 'Reports & history' }).click();
   for (const item of available.slice(0, 2)) {
-    await page.getByRole('checkbox', { name: `Select ${item.name}` }).first().check();
+    await page.getByRole('checkbox', { name: `Select ${item.title}` }).first().check();
   }
   await page.getByRole('button', { name: 'Delete selected (2)' }).click();
   await page.getByRole('button', { name: 'Delete reports' }).click();
-  await expect(page.getByRole('status')).toContainText('2 reports deleted');
+  await expect(page.locator('.notice[role="status"]')).toContainText('2 reports deleted');
   await page.getByRole('button', { name: 'Clear all history' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByRole('button', { name: 'Clear all history' }).click();
-  await page.getByRole('button', { name: 'Delete reports' }).click();
-  await expect(page.getByRole('heading', { name: 'No reports yet' })).toBeVisible();
+  await page.getByRole('button', { name: 'Delete all reports' }).click();
+  await expect(page.getByRole('heading', { name: 'No reports yet' })).toBeVisible({ timeout: 15000 });
   expect(await request.get('/api/runs').then((response) => response.json())).toHaveLength(0);
   expect(await request.get('/api/network/reports').then((response) => response.json())).toHaveLength(0);
 });

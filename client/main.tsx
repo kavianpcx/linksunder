@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
@@ -8,19 +8,24 @@ import {
   ChevronRight,
   Copy,
   FileText,
+  ExternalLink,
   Download,
   FlaskConical,
   LayoutDashboard,
   ListChecks,
   FolderOpen,
+  LoaderCircle,
   Maximize2,
   Minimize2,
   Minus,
   Network,
   Moon,
+  Play,
   Plus,
+  Save,
   Settings,
   ShieldCheck,
+  Square,
   Sun,
   Trash2,
   WifiOff,
@@ -40,7 +45,9 @@ import { HistoryPage } from './HistoryPage';
 import { NetworkInspector } from './NetworkInspector';
 import { SelectField } from './SelectField';
 import { NumberField } from './NumberField';
-import type { NetworkReport } from '../shared/network';
+import type { GeolocationDatabaseInfo, NetworkReport } from '../shared/network';
+import type { HistoryRecord, HistorySummary, ReportStorageMigration } from '../shared/history';
+import type { UpdateState } from '../shared/updates';
 import './style.css';
 import '@fontsource/inter/latin-400.css';
 import '@fontsource/inter/latin-600.css';
@@ -66,6 +73,18 @@ const appearanceOptions = [
   { value: 'dark', label: 'Dark' },
   { value: 'light', label: 'Light' },
 ];
+const timeZoneOptions = [
+  { value: 'local', label: 'Local system time' },
+  { value: 'UTC', label: 'UTC' },
+];
+function formatBytes(value?: number) {
+  if (!Number.isFinite(value) || value === undefined || value <= 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+  return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
 const initial = () =>
   scenarioSchema.parse({
     name: 'Untitled resilience test',
@@ -75,14 +94,19 @@ const initial = () =>
   });
 function App() {
   const [view, setView] = useState('dashboard');
-  const [runs, setRuns] = useState<Run[]>([]);
-  const [networkReports, setNetworkReports] = useState<NetworkReport[]>([]);
+  const [historySummary, setHistorySummary] = useState<HistorySummary>({
+    resilienceCount: 0, networkCount: 0, passedCount: 0, activeCount: 0, recentRuns: [], damagedReports: 0,
+    indexing: { status: 'idle', scanned: 0, total: 0, damaged: 0 },
+  });
   const [selected, setSelected] = useState<Run>();
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkReport>();
   const [scenario, setScenario] = useState<Scenario>(initial);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const [cancelling, setCancelling] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
+  const [timeZone, setTimeZone] = useState(localStorage.getItem('timeZone') === 'UTC' ? 'UTC' : 'local');
   const [timeout, setTimeoutValue] = useState(Number(localStorage.getItem('timeout') || 10000));
   const [defaultScreenshots, setDefaultScreenshots] = useState(localStorage.getItem('defaultScreenshots') === 'true');
   const [json, setJson] = useState('');
@@ -107,16 +131,21 @@ function App() {
   const [storageNotice, setStorageNotice] = useState('');
   const [storageError, setStorageError] = useState('');
   const [storageBusy, setStorageBusy] = useState(false);
+  const [storageJobId, setStorageJobId] = useState('');
+  const [storageProgress, setStorageProgress] = useState<ReportStorageMigration>();
+  const [storageCanceling, setStorageCanceling] = useState(false);
+  const [geolocationDatabases, setGeolocationDatabases] = useState<{ city: GeolocationDatabaseInfo; asn: GeolocationDatabaseInfo }>();
+  const [geolocationBusy, setGeolocationBusy] = useState(false);
+  const [geolocationError, setGeolocationError] = useState('');
+  const [geolocationNotice, setGeolocationNotice] = useState('');
+  const [updateState, setUpdateState] = useState<UpdateState>();
+  const [updatePanelDismissed, setUpdatePanelDismissed] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
   const refreshHistory = useCallback(async () => {
     try {
-      const [nextRuns, nextNetwork] = await Promise.all([
-        api<Run[]>('/api/runs'),
-        api<NetworkReport[]>('/api/network/reports'),
-      ]);
-      setRuns(nextRuns);
-      setNetworkReports(nextNetwork);
-      setSelectedNetwork((current) => current && !nextNetwork.some((report) => report.id === current.id) ? undefined : current);
+      const summary = await api<HistorySummary>('/api/summary');
+      setHistorySummary(summary);
+      setDamagedReports(summary.damagedReports);
     } catch (reason) {
       setError((reason as Error).message);
     }
@@ -132,10 +161,25 @@ function App() {
       .catch(() => {});
   }, []);
   useEffect(() => {
+    if (view !== 'settings') return;
+    api<{ city: GeolocationDatabaseInfo; asn: GeolocationDatabaseInfo }>('/api/settings/geolocation')
+      .then(setGeolocationDatabases)
+      .catch((reason) => setGeolocationError((reason as Error).message));
+  }, [view]);
+  useEffect(() => {
     const bridge = window.linksunderDesktop;
     if (!bridge) return;
     void bridge.isMaximized().then(setWindowMaximized);
     return bridge.onWindowState(setWindowMaximized);
+  }, []);
+  useEffect(() => {
+    const bridge = window.linksunderDesktop;
+    if (!bridge) return;
+    void bridge.getUpdateState().then((state) => { if (state) setUpdateState(state); });
+    return bridge.onUpdateState((state) => {
+      setUpdateState(state);
+      setUpdatePanelDismissed(false);
+    });
   }, []);
   function saveScenario() {
     const result = scenarioSchema.safeParse(scenario);
@@ -143,7 +187,8 @@ function App() {
       setError('Enter a scenario name, valid URL and valid settings before saving.');
       return;
     }
-    const next = [...savedScenarios.filter((s) => s.name !== result.data.name), result.data];
+    const safeScenario = { ...result.data, externalConsent: false };
+    const next = [...savedScenarios.filter((s) => s.name !== safeScenario.name), safeScenario];
     localStorage.setItem('scenarios', JSON.stringify(next));
     setSavedScenarios(next);
     setSavedScenarioName(result.data.name);
@@ -155,18 +200,37 @@ function App() {
   }, [theme]);
   useEffect(() => {
     void refreshHistory();
-    const timer = window.setInterval(() => void refreshHistory(), 1200);
+    const timer = window.setInterval(() => void refreshHistory(), 1800);
     return () => {
       clearInterval(timer);
     };
   }, [refreshHistory]);
+  async function openRun(id: string) {
+    try {
+      setSelected(await api<Run>(`/api/runs/${id}`));
+      setView('result');
+    } catch (reason) {
+      setError((reason as Error).message);
+    }
+  }
+  async function openNetworkReport(id: string) {
+    try {
+      setSelectedNetwork(await api<NetworkReport>(`/api/network/reports/${id}`));
+      setView('network');
+    } catch (reason) {
+      setError((reason as Error).message);
+    }
+  }
   useEffect(() => {
     if (!selected) return;
     let live = true;
     const poll = async () => {
       try {
         const r = await api<Run>('/api/runs/' + selected.id);
-        if (live) setSelected(r);
+        if (live) {
+          setSelected(r);
+          if (r.status !== 'running') setCancelling(false);
+        }
       } catch (e) {
         if (live) setError((e as Error).message);
       }
@@ -200,6 +264,8 @@ function App() {
     }
   }, [selected?.status, nextDemo]);
   async function perform(fn: () => Promise<void>) {
+    if (pendingRef.current) return;
+    pendingRef.current = true;
     setPending(true);
     setError('');
     try {
@@ -207,6 +273,7 @@ function App() {
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      pendingRef.current = false;
       setPending(false);
     }
   }
@@ -232,23 +299,66 @@ function App() {
     setStorageBusy(true);
     setStorageNotice('');
     setStorageError('');
+    setStorageProgress(undefined);
+    setStorageCanceling(false);
     try {
-      const result = await api<{ reportDirectory: string; copied: number; total: number; originalsKept?: boolean }>(
+      const started = await api<{ id?: string; status?: 'running'; reportDirectory?: string; copied?: number; total?: number; originalsKept?: boolean }>(
         '/api/settings/report-directory',
         { path: candidate },
       );
-      setReportDirectory(result.reportDirectory);
-      setStorageDraft(result.reportDirectory);
-      setStorageNotice(
-        result.copied
-          ? `Storage changed. ${result.copied} of ${result.total} report files copied and verified. The original files were kept.`
-          : 'Storage folder updated. Existing report files were kept.',
-      );
+      if (started.id) {
+        setStorageJobId(started.id);
+        let failures = 0;
+        let finished: ReportStorageMigration | undefined;
+        while (!finished) {
+          await new Promise((resolve) => window.setTimeout(resolve, 300));
+          try {
+            const job = await api<ReportStorageMigration>(`/api/settings/report-directory/${started.id}`);
+            setStorageProgress(job);
+            failures = 0;
+            if (job.status !== 'running') finished = job;
+          } catch (error) {
+            failures += 1;
+            if (failures >= 5) throw error;
+          }
+        }
+        if (finished.status === 'complete' && finished.result) {
+          setReportDirectory(finished.result.reportDirectory);
+          setStorageDraft(finished.result.reportDirectory);
+          setStorageNotice(
+            finished.result.copied
+              ? `Storage changed. ${finished.result.copied} of ${finished.result.total} report files copied and verified. The original files were kept.`
+              : 'Storage folder updated. Existing report files were kept.',
+          );
+        } else {
+          throw new Error(finished.error || 'Report storage could not be changed. The current folder remains selected.');
+        }
+      } else if (started.reportDirectory) {
+        setReportDirectory(started.reportDirectory);
+        setStorageDraft(started.reportDirectory);
+        setStorageNotice(
+          started.copied
+            ? `Storage changed. ${started.copied} of ${started.total} report files copied and verified. The original files were kept.`
+            : 'Storage folder updated. Existing report files were kept.',
+        );
+      }
       await refreshHistory();
     } catch (reason) {
       setStorageError((reason as Error).message);
     } finally {
       setStorageBusy(false);
+      setStorageJobId('');
+      setStorageCanceling(false);
+    }
+  }
+  async function cancelReportFolderMigration() {
+    if (!storageJobId) return;
+    setStorageCanceling(true);
+    try {
+      await api(`/api/settings/report-directory/${storageJobId}/cancel`, {});
+    } catch (reason) {
+      setStorageError((reason as Error).message);
+      setStorageCanceling(false);
     }
   }
   async function browseReportFolder() {
@@ -275,26 +385,82 @@ function App() {
       setStorageError((reason as Error).message || 'The report folder could not be opened.');
     }
   }
+  async function setGeolocationDatabase(kind: 'city' | 'asn', databasePath?: string) {
+    setGeolocationBusy(true);
+    setGeolocationError('');
+    setGeolocationNotice('');
+    try {
+      const result = await api<{ databases: { city: GeolocationDatabaseInfo; asn: GeolocationDatabaseInfo } }>(
+        '/api/settings/geolocation', { kind, path: databasePath || '' },
+      );
+      setGeolocationDatabases(result.databases);
+      setGeolocationNotice(databasePath ? `${kind === 'city' ? 'City' : 'ASN'} database verified and selected. Lookups stay on this computer.` : `${kind === 'city' ? 'City' : 'ASN'} database removed. Other local preferences and reports are unchanged.`);
+    } catch (reason) {
+      setGeolocationError((reason as Error).message);
+    } finally {
+      setGeolocationBusy(false);
+    }
+  }
+  async function chooseGeolocationDatabase(kind: 'city' | 'asn') {
+    const bridge = window.linksunderDesktop;
+    if (!bridge) {
+      setGeolocationError('Database selection is available in the installed desktop app.');
+      return;
+    }
+    try {
+      const databasePath = await bridge.chooseGeolocationDatabase(kind);
+      if (databasePath) await setGeolocationDatabase(kind, databasePath);
+    } catch (reason) {
+      setGeolocationError((reason as Error).message);
+    }
+  }
+  async function checkForUpdates() {
+    try {
+      const state = await window.linksunderDesktop?.checkForUpdates();
+      if (state) setUpdateState(state);
+    } catch (reason) {
+      setUpdateState((current) => current ? { ...current, status: 'error', message: (reason as Error).message } : current);
+    }
+  }
+  async function downloadUpdate() {
+    try {
+      const state = await window.linksunderDesktop?.downloadUpdate();
+      if (state) setUpdateState(state);
+    } catch (reason) {
+      setUpdateState((current) => current ? { ...current, status: 'error', message: (reason as Error).message } : current);
+    }
+  }
+  async function cancelUpdateDownload() {
+    try { await window.linksunderDesktop?.cancelUpdateDownload(); }
+    catch (reason) { setUpdateState((current) => current ? { ...current, message: (reason as Error).message } : current); }
+  }
+  async function installUpdate() {
+    try { await window.linksunderDesktop?.installUpdate(); }
+    catch (reason) { setUpdateState((current) => current ? { ...current, message: (reason as Error).message } : current); }
+  }
+  function openReleasePage() {
+    window.linksunderDesktop?.openReleasePage();
+  }
   function resetPreferences() {
     setTheme('dark');
     setTimeoutValue(10000);
     setDefaultScreenshots(false);
+    setTimeZone('local');
     localStorage.setItem('theme', 'dark');
     localStorage.setItem('timeout', '10000');
     localStorage.setItem('defaultScreenshots', 'false');
+    localStorage.removeItem('timeZone');
     setNotice('Default appearance and test preferences restored. Reports and storage location were not changed.');
   }
   useEffect(() => {
     localStorage.setItem('defaultScreenshots', String(defaultScreenshots));
   }, [defaultScreenshots]);
-  const active = runs.some((r) => r.status === 'running') || networkReports.some((report) => report.status === 'running');
-  const lastCheck = [...runs.map((run) => ({ started: run.started, status: run.status })), ...networkReports.map((report) => ({ started: report.started, status: report.status }))]
-    .sort((left, right) => Date.parse(right.started) - Date.parse(left.started))[0];
+  const active = historySummary.activeCount > 0;
   const stats = [
-    ['Resilience tests', runs.length],
-    ['Network inspections', networkReports.length],
-    ['Passed tests', runs.filter((r) => r.status === 'pass').length],
-    ['Last check', lastCheck?.status.toUpperCase() || 'NO CHECKS'],
+    ['Resilience tests', historySummary.resilienceCount],
+    ['Network inspections', historySummary.networkCount],
+    ['Passed tests', historySummary.passedCount],
+    ['Last check', historySummary.lastCheck?.status.toUpperCase() || 'NO CHECKS'],
   ];
   const updateStep = (i: number, patch: Partial<Step>) =>
     setScenario({
@@ -306,6 +472,7 @@ function App() {
     [steps[i], steps[i + d]] = [steps[i + d], steps[i]];
     setScenario({ ...scenario, steps });
   };
+  const scenarioValid = scenarioSchema.safeParse(scenario).success;
   return (
     <>
       {window.linksunderDesktop && (
@@ -478,7 +645,7 @@ function App() {
               <section className="panel">
                 <div className="panel-head">
                   <h2>
-                    Recent resilience tests <span className="count">{runs.length}</span>
+                    Recent resilience tests <span className="count">{historySummary.resilienceCount}</span>
                   </h2>
                   <div className="panel-head-actions">
                     <span>Browser-local time · JSON reports use ISO timestamps</span>
@@ -487,7 +654,7 @@ function App() {
                     </button>
                   </div>
                 </div>
-                {!runs.length ? (
+                {!historySummary.recentRuns.length ? (
                   <div className="empty">
                     <span className="empty-icon">
                       <FlaskConical size={29} />
@@ -515,20 +682,17 @@ function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {runs.map((r) => (
+                        {historySummary.recentRuns.map((r: HistoryRecord) => (
                           <tr key={r.id}>
                             <td>
                               <button
                                 className="runlink"
-                                onClick={() => {
-                                  setSelected(r);
-                                  setView('result');
-                                }}
+                                onClick={() => void openRun(r.id)}
                               >
-                                {r.name}
+                                {r.title}
                                 <ChevronRight size={14} />
                               </button>
-                              <small>{r.type}</small>
+                              <small>{r.target || 'Resilience test'}</small>
                             </td>
                             <td>
                               <span className={'badge ' + r.status}>{r.status}</span>
@@ -573,6 +737,7 @@ function App() {
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
+                  if (pendingRef.current || active || !scenario.externalConsent) return;
                   void perform(async () => {
                     const parsed = scenarioSchema.parse(scenario);
                     const r = await api<Run>('/api/runs', parsed);
@@ -586,7 +751,7 @@ function App() {
                   {notice && <p role="status">{notice}</p>}
                   <div className="buttons">
                     <button type="button" className="secondary" onClick={saveScenario}>
-                      Save scenario
+                      <Save size={16} /> Save scenario
                     </button>
                   </div>
                   {savedScenarios.length > 0 && (
@@ -598,7 +763,7 @@ function App() {
                       onChange={(name) => {
                         const saved = savedScenarios.find((scenarioOption) => scenarioOption.name === name);
                         if (saved) {
-                          setScenario(saved);
+                          setScenario({ ...saved, externalConsent: false });
                           setSavedScenarioName(name);
                           setNotice('Saved scenario loaded.');
                         }
@@ -625,8 +790,13 @@ function App() {
                       <input
                         type="url"
                         required
+                        disabled={pending || active}
                         value={scenario.url}
-                        onChange={(e) => setScenario({ ...scenario, url: e.target.value })}
+                        onChange={(e) => setScenario((current) => ({
+                          ...current,
+                          url: e.target.value,
+                          externalConsent: current.url === e.target.value ? current.externalConsent : false,
+                        }))}
                       />
                     </label>
                   </div>
@@ -636,16 +806,22 @@ function App() {
                     options={testTypeOptions}
                     onChange={(value) => setScenario({ ...scenario, type: value as Scenario['type'] })}
                   />
-                  <label className="checkbox">
+                  <label className="checkbox authorization-check">
                     <input
                       type="checkbox"
                       checked={scenario.externalConsent}
+                      disabled={pending || active}
+                      aria-describedby="scenario-authorization-help"
                       onChange={(e) =>
                         setScenario({ ...scenario, externalConsent: e.target.checked })
                       }
                     />{' '}
-                    I own or have permission to test this external site.
+                    I own this server or have permission to test it.
                   </label>
+                  <p id="scenario-authorization-help" className="permission-hint" role="note">
+                    <ShieldCheck size={15} aria-hidden="true" />
+                    Confirm that you own or have permission to test this target before starting.
+                  </p>
                   <p className="hint">
                     No steps? Quick Scan records observations only. Add Check Element or Check Field
                     Value to earn a PASS or FAIL.
@@ -834,7 +1010,7 @@ function App() {
                       className="secondary"
                       onClick={() => {
                         try {
-                          setScenario(scenarioSchema.parse(JSON.parse(json)));
+                          setScenario({ ...scenarioSchema.parse(JSON.parse(json)), externalConsent: false });
                           setError('');
                         } catch {
                           setError('Invalid scenario JSON. Check the schema and values.');
@@ -848,8 +1024,9 @@ function App() {
                     </button>
                   </div>
                 </details>
-                <button className="primary" disabled={pending || active}>
-                  {pending ? 'Starting Chromium…' : 'Run Test'} <ChevronRight size={16} />
+                <button className="primary" disabled={pending || active || !scenario.externalConsent || !scenarioValid} aria-describedby="scenario-authorization-help" aria-busy={pending || active}>
+                  {pending || active ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
+                  {pending ? 'Starting test…' : active ? 'Test running…' : 'Run Test'}
                 </button>
               </form>
             </>
@@ -925,15 +1102,21 @@ function App() {
               <div className="buttons">
                 {selected.status === 'running' ? (
                   <button
+                    type="button"
                     className="secondary"
+                    disabled={cancelling}
+                    aria-busy={cancelling}
                     onClick={() => {
                       setNextDemo(undefined);
-                      void perform(async () => {
-                        await api('/api/cancel', {});
+                      setCancelling(true);
+                      void api('/api/cancel', {}).catch((reason) => {
+                        setCancelling(false);
+                        setError((reason as Error).message);
                       });
                     }}
                   >
-                    Cancel run
+                    {cancelling ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Square size={15} aria-hidden="true" />}
+                    {cancelling ? 'Stopping…' : 'Cancel run'}
                   </button>
                 ) : (
                   ['html', 'json'].map((f) => (
@@ -951,16 +1134,9 @@ function App() {
           )}
           {view === 'history' && (
             <HistoryPage
-              runs={runs}
-              networkReports={networkReports}
-              onOpenRun={(run) => {
-                setSelected(run);
-                setView('result');
-              }}
-              onOpenNetwork={(report) => {
-                setSelectedNetwork(report);
-                setView('network');
-              }}
+              summary={historySummary}
+              onOpenRun={(id) => void openRun(id)}
+              onOpenNetwork={(id) => void openNetworkReport(id)}
               onRefresh={refreshHistory}
             />
           )}
@@ -978,7 +1154,7 @@ function App() {
                 <div>
                   <div className="eyebrow">WORKSPACE PREFERENCES</div>
                   <h1>Settings</h1>
-                  <p>Choose where reports live and set comfortable defaults for your next check.</p>
+                  <p>Choose local report and geolocation data, display preferences, and update options.</p>
                 </div>
                 <button className="secondary" onClick={resetPreferences}>Reset defaults</button>
               </div>
@@ -986,23 +1162,67 @@ function App() {
               <section className="panel form settings-section">
                 <div className="panel-head"><div><h2>Report storage</h2><p className="hint">Reports stay on this computer. Changing folders copies and verifies them; the previous copies are kept.</p></div></div>
                 <label>
-                    Report folder path
-                  <input aria-label="Report storage folder" value={storageDraft || reportDirectory} onChange={(event) => setStorageDraft(event.target.value)} spellCheck={false} />
+                  Report folder path
+                  <input aria-label="Report storage folder" value={storageDraft} onChange={(event) => { setStorageDraft(event.target.value); setStorageError(''); setStorageNotice(''); }} spellCheck={false} />
                 </label>
                 {storageError && <div role="alert" className="alert">{storageError}<button aria-label="Dismiss storage error" onClick={() => setStorageError('')}><X size={15} /></button></div>}
                 {storageNotice && <p role="status" className="notice">{storageNotice}</p>}
+                {storageProgress?.status === 'running' && <div className="storage-progress" role="status" aria-live="polite">
+                  <div><LoaderCircle className="spin" size={15} /><span>Copying and verifying report files: {storageProgress.processed} of {storageProgress.total} checked{storageProgress.current ? ` · ${storageProgress.current}` : ''}</span></div>
+                  <progress aria-label="Report folder migration progress" max={Math.max(storageProgress.total, 1)} value={storageProgress.total ? storageProgress.processed : undefined} />
+                  <button type="button" className="secondary" onClick={() => void cancelReportFolderMigration()} disabled={storageCanceling}>{storageCanceling ? 'Cancelling…' : 'Cancel copy'}</button>
+                </div>}
                 {damagedReports > 0 && <div role="status" className="notice">{damagedReports} report file{damagedReports === 1 ? ' was' : 's were'} unreadable at startup and {damagedReports === 1 ? 'was' : 'were'} left in the folder unchanged for recovery.</div>}
                 <div className="buttons settings-actions">
                   <button type="button" className="secondary" onClick={() => void browseReportFolder()} disabled={storageBusy}><FileText size={15} /> Browse…</button>
                   <button type="button" className="primary" onClick={() => void useReportFolder()} disabled={storageBusy || !storageDraft.trim() || storageDraft.trim() === reportDirectory}>{storageBusy ? 'Copying reports…' : 'Use this folder'}</button>
+                  <button type="button" className="secondary" onClick={() => { setStorageDraft(reportDirectory); setStorageError(''); setStorageNotice(''); }} disabled={storageBusy || storageDraft === reportDirectory}>Cancel changes</button>
                   <button type="button" className="secondary" onClick={() => void openReportFolder()} disabled={!window.linksunderDesktop}><FolderOpen size={15} /> Open folder</button>
                 </div>
                 {!window.linksunderDesktop && <p className="hint">Folder browsing and Open folder are available in the installed desktop app. You can enter an absolute folder path here.</p>}
               </section>
               <section className="panel form settings-section">
+                <div className="panel-head"><div><h2>Offline IP geolocation</h2><p className="hint">Optional local MaxMind .mmdb files add approximate country, city, network, and ASN details to Network Inspector reports. LinkSunder never sends IP addresses to a location service.</p></div></div>
+                <div className="geo-settings-grid">
+                  {(['city', 'asn'] as const).map((kind) => {
+                    const database = geolocationDatabases?.[kind];
+                    return <article className="geo-database" key={kind}>
+                      <div><strong>{kind === 'city' ? 'City and country' : 'ASN and organization'}</strong><span className={database?.configured ? 'badge pass' : 'badge'}>{database?.configured ? 'Selected' : 'Not configured'}</span></div>
+                      <p className="hint">{database?.databaseType || (database?.configured ? 'Database will be checked when selected for a lookup.' : kind === 'city' ? 'GeoLite2-City.mmdb' : 'GeoLite2-ASN.mmdb')}</p>
+                      {database?.path && <p className="geo-path" title={database.path}>{database.path}</p>}
+                      {database?.updatedAt && <p className="hint">Database build date: {new Date(database.updatedAt).toLocaleDateString()}</p>}
+                      <div className="buttons"><button type="button" className="secondary" onClick={() => void chooseGeolocationDatabase(kind)} disabled={geolocationBusy || !window.linksunderDesktop}><FolderOpen size={15} /> Choose {kind === 'city' ? 'City' : 'ASN'} file</button>{database?.configured && <button type="button" className="secondary" onClick={() => void setGeolocationDatabase(kind)} disabled={geolocationBusy}><X size={15} /> Remove</button>}</div>
+                    </article>;
+                  })}
+                </div>
+                {geolocationError && <div role="alert" className="alert">{geolocationError}</div>}
+                {geolocationNotice && <p role="status" className="notice">{geolocationNotice}</p>}
+                <div className="geo-attribution"><p className="hint">Get optional GeoLite2 data from MaxMind, then choose the downloaded .mmdb files above. A MaxMind account and license terms may apply. LinkSunder does not bundle or redistribute the database.</p><a href="https://www.maxmind.com/en/geolite2/signup" target="_blank" rel="noreferrer" onClick={(event) => { if (window.linksunderDesktop) { event.preventDefault(); window.linksunderDesktop.openGeolocationSignup(); } }}>Visit MaxMind GeoLite2</a></div>
+                <p className="hint">Locations are estimates, not proof of a server's physical location. CDN, anycast, proxy, VPN, and shared hosting addresses can be misleading. Use current data under the database provider's license.</p>
+              </section>
+              <section className="panel form settings-section updates-section">
+                <div className="panel-head"><div><h2>Software updates</h2><p className="hint">LinkSunder checks only when you choose Check for Updates. It never downloads or installs in the background.</p></div><span className={`badge ${updateState?.status === 'current' ? 'pass' : ''}`}>{updateState?.status === 'ready' ? 'Update ready' : updateState?.status === 'downloading' ? 'Downloading' : updateState?.status === 'checking' ? 'Checking' : updateState?.status === 'unsupported' ? 'Manual update' : updateState?.status === 'available' ? 'Available' : updateState?.status === 'current' ? 'Up to date' : 'Not checked'}</span></div>
+                <div className="update-version-grid"><div><span>Installed version</span><strong>{updateState?.currentVersion || `v${__LINKSUNDER_VERSION__}`}</strong></div><div><span>Latest checked version</span><strong>{updateState?.latestVersion || 'Not checked yet'}</strong></div><div><span>Package update support</span><strong>{updateState?.supportReason || (window.linksunderDesktop ? 'Checking package support…' : 'Use the official release downloads.')}</strong></div><div><span>Last successful check</span><strong>{updateState?.lastChecked ? formatRunTimestamp(updateState.lastChecked) : 'None yet'}</strong></div></div>
+                {updateState?.message && <p role="status" className={updateState.status === 'error' ? 'inline-warning' : 'hint'}>{updateState.message}</p>}
+                {updateState?.latestVersion && updateState.releaseNotes && <details className="update-notes"><summary>Release notes for {updateState.latestVersion}</summary><pre>{updateState.releaseNotes}</pre></details>}
+                {updateState?.downloadSize !== undefined && <p className="hint">Download size: {formatBytes(updateState.downloadSize)}</p>}
+                <div className="buttons">
+                  {updateState?.supported && <button type="button" className="secondary" onClick={() => void checkForUpdates()} disabled={updateState.status === 'checking' || updateState.status === 'downloading'}><LoaderCircle size={15} className={updateState.status === 'checking' ? 'spin' : undefined} /> Check for Updates</button>}
+                  {updateState?.supported && updateState.latestVersion && ['available', 'cancelled', 'error'].includes(updateState.status) && <button type="button" className="primary" onClick={() => void downloadUpdate()}><Download size={15} />{updateState.status === 'cancelled' || updateState.status === 'error' ? 'Retry Download' : 'Download Update'}</button>}
+                  {updateState?.status === 'downloading' && <button type="button" className="secondary" onClick={() => void cancelUpdateDownload()} disabled={updateState.cancelRequested} aria-busy={updateState.cancelRequested}><Square size={14} />{updateState.cancelRequested ? 'Cancelling…' : 'Cancel Download'}</button>}
+                  {updateState?.status === 'ready' && <button type="button" className="primary" onClick={() => void installUpdate()}><Download size={15} /> Restart &amp; Install</button>}
+                  {window.linksunderDesktop ? <button type="button" className="secondary" onClick={openReleasePage}><ExternalLink size={15} /> Official Releases</button> : <a className="secondary" href="https://github.com/kavianpcx/linksunder/releases" target="_blank" rel="noreferrer"><ExternalLink size={15} /> Official Releases</a>}
+                </div>
+                {!window.linksunderDesktop && <p className="hint">In-app updates are available in supported installed desktop packages. You are using the browser preview.</p>}
+                {updateState?.status === 'downloading' && <div className="update-progress" role="status" aria-live="polite"><div><span>{updateState.progress ? `${updateState.progress.percent.toFixed(1)}%` : 'Downloading update…'}</span><span>{updateState.progress ? `${formatBytes(updateState.progress.transferred)} of ${formatBytes(updateState.progress.total)} · ${formatBytes(updateState.progress.bytesPerSecond)}/s` : 'Waiting for download progress'}</span></div><progress aria-label="Update download progress" max={100} value={updateState.progress?.total ? updateState.progress.percent : undefined} /></div>}
+                {updateState?.status === 'ready' && <div className="update-ready"><strong>Update Ready</strong><p>The downloaded package passed the updater's SHA-512 integrity check against GitHub release metadata. Checksums confirm integrity, not publisher identity. Public packages are currently unsigned.</p><button type="button" className="secondary" onClick={() => setUpdatePanelDismissed(true)}>Install Later</button></div>}
+                <p className="hint update-security">Downloads use the public LinkSunder GitHub Releases feed and are checked against release SHA-512 metadata. This does not prove the publisher's identity. LinkSunder's public packages are unsigned. Users on v0.3.0 must install the first update-enabled release manually once. Windows portable ZIP and Linux DEB packages use manual updates; installed Windows NSIS and Linux AppImage packages can update in-app.</p>
+              </section>
+              <section className="panel form settings-section">
                 <h2>Default test preferences</h2>
                 <div className="columns">
                   <SelectField label="Appearance" value={theme} options={appearanceOptions} onChange={setTheme} />
+                  <SelectField label="Time display" value={timeZone} options={timeZoneOptions} onChange={(value) => { setTimeZone(value); localStorage.setItem('timeZone', value === 'UTC' ? 'UTC' : 'local'); }} />
                   <NumberField
                     label="Default step timeout (ms)"
                     value={timeout}
@@ -1029,6 +1249,11 @@ function App() {
               </section>
             </>
           )}
+          {window.linksunderDesktop && view !== 'settings' && updateState?.supported && !updatePanelDismissed && (updateState.status === 'downloading' || updateState.status === 'ready') && <aside className="update-toast" aria-label="Software update">
+            <div className="update-toast-head"><strong>{updateState.status === 'ready' ? 'Update Ready' : 'Downloading LinkSunder update'}</strong><span>{updateState.latestVersion || ''}</span></div>
+            {updateState.status === 'downloading' && <><p role="status">{updateState.progress ? `${updateState.progress.percent.toFixed(1)}% · ${formatBytes(updateState.progress.transferred)} of ${formatBytes(updateState.progress.total)} · ${formatBytes(updateState.progress.bytesPerSecond)}/s` : 'Waiting for download progress'}</p><progress aria-label="Update download progress" max={100} value={updateState.progress?.total ? updateState.progress.percent : undefined} /><button type="button" className="secondary" onClick={() => void cancelUpdateDownload()} disabled={updateState.cancelRequested} aria-busy={updateState.cancelRequested}><Square size={14} />{updateState.cancelRequested ? 'Cancelling…' : 'Cancel Download'}</button></>}
+            {updateState.status === 'ready' && <><p role="status">Download verified. Restart when convenient.</p><div className="buttons"><button type="button" className="primary" onClick={() => void installUpdate()}><Download size={15} /> Restart &amp; Install</button><button type="button" className="secondary" onClick={() => setUpdatePanelDismissed(true)}>Install Later</button></div></>}
+          </aside>}
           <footer>
             <span>
               LinkSunder <span className="muted">/</span> A small lab for a stronger web.
