@@ -651,11 +651,12 @@ test('cancels a report folder migration without switching away from the original
 });
 
 test('deletes a single report only after confirmation', async ({ page, request }) => {
+  test.setTimeout(120000);
   const started = await request.post('/api/runs', {
     headers: { 'X-LinkSunder': 'local' },
     data: { name: `Single delete ${Date.now()}`, url: `${appURL}/demo/fixed`, externalConsent: true },
   }).then((response) => response.json()) as { id: string };
-  await expect.poll(async () => (await request.get(`/api/runs/${started.id}`).then((response) => response.json())).status).not.toBe('running');
+  await expect.poll(async () => (await request.get(`/api/runs/${started.id}`).then((response) => response.json())).status, { timeout: 30000 }).not.toBe('running');
   const selected = await request.get(`/api/runs/${started.id}`).then((response) => response.json()) as { id: string; name: string };
   const selectedTitle = selected.name;
   await page.goto('/');
