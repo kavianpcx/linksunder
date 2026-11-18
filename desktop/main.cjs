@@ -26,6 +26,7 @@ function recordUpdateTestStartup(event, details = {}) {
       appImage: process.env.APPIMAGE,
       appDir: process.env.APPDIR,
       debugPort: process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT,
+      remoteDebuggingPort: app.commandLine.getSwitchValue('remote-debugging-port'),
       args: process.argv,
       ...details,
     }) + '\n');
@@ -61,6 +62,7 @@ else {
   app
     .whenReady()
     .then(async () => {
+      recordUpdateTestStartup('app-ready');
       await start();
       recordUpdateTestStartup('ready');
     })
@@ -75,6 +77,7 @@ else {
 }
 
 async function start() {
+  recordUpdateTestStartup('start-entered');
   Menu.setApplicationMenu(null);
   const resources = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'build');
   const browserDirectory = path.join(resources, 'browsers');
@@ -99,6 +102,7 @@ async function start() {
     });
     probe.listen(previousPort, '127.0.0.1', () => probe.close(() => resolve(previousPort)));
   });
+  recordUpdateTestStartup('engine-port-selected', { port, portFile });
   fs.writeFileSync(portFile, JSON.stringify({ port }));
   const env = {
     ...process.env,
@@ -108,24 +112,37 @@ async function start() {
     LINKSUNDER_SETTINGS_FILE: path.join(app.getPath('userData'), 'settings.json'),
   };
   if (fs.existsSync(browserDirectory)) env.PLAYWRIGHT_BROWSERS_PATH = browserDirectory;
-  engine = utilityProcess.fork(path.join(app.getAppPath(), 'dist/server/index.js'), [], {
+  const engineEntry = path.join(app.getAppPath(), 'dist/server/index.js');
+  recordUpdateTestStartup('engine-fork-requested', {
+    engineEntry,
+    engineEntryExists: fs.existsSync(engineEntry),
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    browserDirectoryExists: fs.existsSync(browserDirectory),
+  });
+  engine = utilityProcess.fork(engineEntry, [], {
     env,
     cwd: app.isPackaged ? process.resourcesPath : app.getAppPath(),
     serviceName: 'LinkSunder test engine',
     stdio: 'pipe',
   });
+  recordUpdateTestStartup('engine-forked', { enginePid: engine.pid });
   origin = await new Promise((resolve, reject) => {
     let output = '';
     const timer = setTimeout(() => reject(new Error('Engine startup timed out')), 30000);
     engine.stdout.on('data', (data) => {
-      output = (output + data.toString()).slice(-2000);
+      const chunk = data.toString();
+      recordUpdateTestStartup('engine-output', { chunk: chunk.slice(-400) });
+      output = (output + chunk).slice(-2000);
       const match = output.match(/LinkSunder ready: (http:\/\/127\.0\.0\.1:\d+)/);
       if (match) {
         clearTimeout(timer);
+        recordUpdateTestStartup('engine-ready', { origin: match[1] });
         resolve(match[1]);
       }
     });
-    engine.on('exit', () => {
+    engine.on('exit', (code) => {
+      recordUpdateTestStartup('engine-exit', { code });
       engineExited = true;
       clearTimeout(timer);
       reject(new Error('Engine exited'));
@@ -138,6 +155,7 @@ async function start() {
       }
     });
   });
+  recordUpdateTestStartup('window-creating', { origin });
   window = new BrowserWindow({
     icon: path.join(app.getAppPath(), 'desktop/icon.png'),
     title: 'LinkSunder',
@@ -172,8 +190,12 @@ async function start() {
       defaultPath: path.join(app.getPath('downloads'), path.basename(item.getFilename())),
     });
   });
-  window.once('ready-to-show', () => window.show());
+  window.once('ready-to-show', () => {
+    recordUpdateTestStartup('window-ready-to-show');
+    window.show();
+  });
   await window.loadURL(origin);
+  recordUpdateTestStartup('window-loaded', { url: window.webContents.getURL() });
 }
 
 function restoreVersionedAppImagePath() {
