@@ -1,0 +1,25 @@
+name: Hold unverified v0.5.0 release
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, closed]
+permissions:
+  contents: write
+jobs:
+  draft-unverified-release:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'test/cross-version-updater-v0-5' &&
+      (github.event.action != 'closed' || github.event.pull_request.merged == true)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Keep the unverified release private until the real update test passes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          release_id=$(gh api "repos/$GH_REPO/releases/tags/v0.5.0" --jq '.id')
+          gh api -X PATCH "repos/$GH_REPO/releases/$release_id" -F draft=true >/dev/null
+          gh api "repos/$GH_REPO/releases/$release_id" --jq '.draft' | grep -qx true
+

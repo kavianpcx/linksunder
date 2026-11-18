@@ -79,16 +79,21 @@ jobs:
           [[ -n "$linux_manifest" && $(find packages -type f -name latest-linux.yml | wc -l) -eq 1 ]]
           node scripts/write-update-metadata.mjs verify windows "$(dirname "$win_manifest")"
           node scripts/write-update-metadata.mjs verify linux "$(dirname "$linux_manifest")"
-      - name: Verify release is new and validate artifacts and update manifests
+      - name: Verify the release is new or an approved draft and validate artifacts
         run: |
           set -euo pipefail
-          if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; refusing to overwrite it."
-            exit 1
-          fi
-          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists; refusing to move it."
-            exit 1
+          if gh api "repos/$GH_REPO/releases/tags/$TAG" > existing-release.json 2>/dev/null; then
+            jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true' existing-release.json >/dev/null || {
+              echo "Release $TAG exists and is not a draft; refusing to overwrite a published release."
+              exit 1
+            }
+            echo "EXISTING_RELEASE_ID=$(jq -r .id existing-release.json)" >> "$GITHUB_ENV"
+            gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null
+          else
+            if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+              echo "Tag $TAG already exists without an approved draft release; refusing to move it."
+              exit 1
+            fi
           fi
           mapfile -d '' assets < <(find packages -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.deb' -o -name '*.AppImage' \) -print0)
           [[ "${#assets[@]}" -eq 4 ]]
@@ -114,8 +119,16 @@ jobs:
             hash=$(sha256sum "$file" | cut -d ' ' -f1)
             printf '%s  %s\n' "$hash" "$(basename "$file")" >> SHA256SUMS.txt
           done
-      - name: Publish the verified release without replacing existing history
+      - name: Publish the verified release or refresh its approved draft
         run: |
           set -euo pipefail
           mapfile -d '' assets < <(find packages -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.deb' -o -name '*.AppImage' -o -name 'latest.yml' -o -name 'latest-linux.yml' \) -print0)
-          gh release create "$TAG" --target "$BUILD_SHA" --title "LinkSunder $TAG — desktop applications" --notes-file notes.md "${assets[@]}" SHA256SUMS.txt
+          if [[ -n "${EXISTING_RELEASE_ID:-}" ]]; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$BUILD_SHA" -F force=true >/dev/null
+            gh release upload "$TAG" --repo "$GH_REPO" --clobber "${assets[@]}" SHA256SUMS.txt
+            jq -n --arg name "LinkSunder $TAG — desktop applications" --arg make_latest "true" --rawfile body notes.md '{draft: false, make_latest: $make_latest, name: $name, body: $body}' > release-update.json
+            gh api -X PATCH "repos/$GH_REPO/releases/$EXISTING_RELEASE_ID" --input release-update.json
+          else
+            gh release create "$TAG" --target "$BUILD_SHA" --title "LinkSunder $TAG — desktop applications" --notes-file notes.md "${assets[@]}" SHA256SUMS.txt
+          fi
+

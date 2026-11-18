@@ -15,8 +15,20 @@ let shuttingDown = false;
 let engineExited = false;
 let updateController;
 app.setName('LinkSunder');
+if (process.env.CI === 'true' && process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT) {
+  const port = Number(process.env.LINKSUNDER_UPDATE_TEST_DEBUG_PORT);
+  if (Number.isInteger(port) && port > 0 && port < 65536) {
+    app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+    app.commandLine.appendSwitch('remote-debugging-port', String(port));
+  }
+}
 if (process.env.LINKSUNDER_DESKTOP_DATA)
   app.setPath('userData', process.env.LINKSUNDER_DESKTOP_DATA);
+if (process.platform === 'linux') {
+  autoUpdater.on('appimage-filename-updated', (updatedPath) => {
+    process.env.APPIMAGE = updatedPath;
+  });
+}
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => {
@@ -137,7 +149,24 @@ async function start() {
   await window.loadURL(origin);
 }
 
+function restoreVersionedAppImagePath() {
+  const previousPath = process.env.APPIMAGE;
+  if (process.platform !== 'linux' || !previousPath || fs.existsSync(previousPath)) return;
+  try {
+    const directory = path.dirname(previousPath);
+    const currentPrefix = `LinkSunder-${app.getVersion()}-Linux-`;
+    const currentName = fs.readdirSync(directory).find((name) => name.startsWith(currentPrefix) && name.toLowerCase().endsWith('.appimage'));
+    if (!currentName) return;
+    const currentPath = path.join(directory, currentName);
+    const file = fs.statSync(currentPath);
+    if (file.isFile() && (file.mode & 0o111) !== 0) process.env.APPIMAGE = currentPath;
+  } catch {
+    // Keep manual-update mode if the installed AppImage cannot be located safely.
+  }
+}
+
 function updateSupport() {
+  restoreVersionedAppImagePath();
   if (!app.isPackaged) return { supported: false, reason: 'In-app updates are available in supported installed desktop packages.' };
   if (process.platform === 'win32') {
     const installDirectory = path.dirname(app.getPath('exe'));
@@ -146,7 +175,7 @@ function updateSupport() {
       ? { supported: true, reason: 'Windows NSIS installer.' }
       : { supported: false, reason: 'This Windows portable ZIP must be updated manually from the official releases page.' };
   }
-  if (process.platform === 'linux' && process.env.APPIMAGE)
+  if (process.platform === 'linux' && process.env.APPIMAGE && fs.existsSync(process.env.APPIMAGE))
     return { supported: true, reason: 'Linux AppImage.' };
   if (process.platform === 'linux')
     return { supported: false, reason: 'Linux DEB packages are updated manually through the system package installer to preserve its permission and signature protections.' };
@@ -281,3 +310,4 @@ app.on('before-quit', (event) => {
   engine.kill();
   setTimeout(() => app.exit(0), 5000).unref();
 });
+
