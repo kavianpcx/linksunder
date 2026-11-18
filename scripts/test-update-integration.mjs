@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import console from 'node:console';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -182,7 +182,19 @@ async function prepareOldInstallation(feedUrl) {
   await chmod(appImagePath, 0o755);
   await runProcess(appImagePath, ['--appimage-extract'], { cwd: testRoot, env: { ...process.env, APPIMAGE_EXTRACT_AND_RUN: '1' }, timeout: 180000 });
   const extractedRoot = path.join(testRoot, 'squashfs-root');
-  await writeFile(path.join(extractedRoot, 'resources', configName), `provider: generic\nurl: ${feedUrl}\nupdaterCacheDirName: linksunder-update-integration\nchannel: latest\n`, 'utf8');
+  const configCandidates = [path.join(extractedRoot, 'usr', 'resources', configName), path.join(extractedRoot, 'resources', configName)];
+  let updateConfig;
+  for (const candidate of configCandidates) {
+    try {
+      await access(candidate);
+      updateConfig = candidate;
+      break;
+    } catch {
+      // AppImage layouts place Electron resources under usr/resources or resources.
+    }
+  }
+  assert.ok(updateConfig, 'The extracted v0.4.0 AppImage must contain resources/app-update.yml.');
+  await writeFile(updateConfig, `provider: generic\nurl: ${feedUrl}\nupdaterCacheDirName: linksunder-update-integration\nchannel: latest\n`, 'utf8');
   return path.join(extractedRoot, 'AppRun');
 }
 
