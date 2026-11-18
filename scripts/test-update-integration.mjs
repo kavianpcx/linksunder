@@ -336,12 +336,13 @@ try {
   });
   phase('install the verified update and wait for v0.4.0 to close');
   const oldAppClosed = oldApp.waitForEvent('close', { timeout: 30000 });
-  const installStarted = await withTimeout('request the verified update installation', page.evaluate(() => window.linksunderDesktop.installUpdate()), 30000);
-  if (installStarted !== true) {
-    const state = await updateState(page).catch((error) => ({ message: error.message }));
-    assert.fail(`The verified updater declined to start installation: ${JSON.stringify(state)}`);
+  await page.getByRole('button', { name: 'Restart & Install', exact: true }).click();
+  try {
+    await oldAppClosed;
+  } catch (error) {
+    const state = await updateState(page).catch((evaluationError) => ({ message: evaluationError.message }));
+    assert.fail(`The verified update did not close the previous app: ${JSON.stringify(state)}; ${error.message}`);
   }
-  await oldAppClosed;
   const updated = await connectToUpdatedApp(debugPort);
   updatedBrowser = updated.browser;
   updatedPage = updated.page;
