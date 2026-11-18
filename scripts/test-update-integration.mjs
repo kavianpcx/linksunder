@@ -332,7 +332,7 @@ try {
   // Playwright's Electron launcher keeps a Node inspector session attached to the main process.
   // Detach it shortly before quit so the debugger cannot hold the updater's exit open.
   await oldApp.evaluate(() => {
-    setTimeout(() => require('node:inspector').close(), 500);
+    setTimeout(() => process.getBuiltinModule('node:inspector').close(), 500);
   });
   phase('install the verified update and wait for v0.4.0 to close');
   const oldAppClosed = oldApp.waitForEvent('close', { timeout: 30000 });
