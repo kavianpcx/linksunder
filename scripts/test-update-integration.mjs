@@ -48,7 +48,9 @@ const watchdog = setTimeout(() => {
 
 const testRoot = await mkdtemp(path.join(tmpdir(), 'linksunder-update-integration-'));
 const quitLogPath = path.join(testRoot, 'update-quit-events.log');
+const startupLogPath = path.join(testRoot, 'update-start-events.log');
 await writeFile(quitLogPath, '', 'utf8');
+await writeFile(startupLogPath, '', 'utf8');
 assert.ok(path.resolve(testRoot).startsWith(path.resolve(tmpdir()) + path.sep));
 assert.ok(path.basename(testRoot).startsWith('linksunder-update-integration-'));
 const dataDirectory = path.join(testRoot, 'user-data');
@@ -249,7 +251,7 @@ async function updateState(page) {
 async function connectToUpdatedApp(port) {
   phase('connect to the application window');
   const endpoint = `http://127.0.0.1:${port}`;
-  const deadline = Date.now() + 180000;
+  const deadline = Date.now() + 60000;
   let browser;
   try {
     while (Date.now() < deadline) {
@@ -266,7 +268,9 @@ async function connectToUpdatedApp(port) {
       if (!browser.isConnected()) browser = undefined;
       await delay(500);
     }
-    throw new Error('The updated application did not restart with its isolated verification window.');
+    const startupEvents = await readFile(startupLogPath, 'utf8').catch((error) => 'Could not read startup events: ' + error.message);
+    const quitEvents = await readFile(quitLogPath, 'utf8').catch((error) => 'Could not read quit events: ' + error.message);
+    throw new Error('The updated application did not restart with its isolated verification window. Startup events: ' + (startupEvents || '(none)') + '; previous-app quit events: ' + (quitEvents || '(none)'));
   } catch (error) {
     if (browser) await withTimeout('close an unverified updated application', browser.close(), 10000).catch(() => {});
     throw error;
@@ -332,6 +336,7 @@ try {
     ...process.env,
     LINKSUNDER_DESKTOP_DATA: dataDirectory,
     LINKSUNDER_UPDATE_TEST_DEBUG_PORT: String(debugPort),
+    LINKSUNDER_UPDATE_TEST_START_LOG: startupLogPath,
     CI: 'true',
     LINKSUNDER_UPDATE_TEST_QUIT_LOG: quitLogPath,
     ...(platform === 'windows'
@@ -341,7 +346,6 @@ try {
           XDG_CACHE_HOME: cacheDirectory,
           APPIMAGE: appImagePath,
           APPIMAGE_EXTRACT_AND_RUN: '1',
-          APPDIR: path.join(testRoot, 'squashfs-root'),
         }),
   };
   phase(`launch isolated v${oldVersion} application`);
