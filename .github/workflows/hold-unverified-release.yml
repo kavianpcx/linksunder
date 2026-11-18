@@ -21,7 +21,8 @@ jobs:
           PR_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          old_runs=$(gh api "repos/$GH_REPO/actions/runs?branch=$PR_BRANCH&per_page=100" --jq --arg sha "$PR_SHA" '[.workflow_runs[] | select(.head_sha != $sha and (.status == "queued" or .status == "in_progress") and (.name == "CI" or .name == "Desktop packages")) | .id] | .[]')
+          gh api "repos/$GH_REPO/actions/runs?branch=$PR_BRANCH&per_page=100" > branch-runs.json
+          old_runs=$(jq -r --arg sha "$PR_SHA" '.workflow_runs[] | select(.head_sha != $sha and (.status == "queued" or .status == "in_progress") and (.name == "CI" or .name == "Desktop packages")) | .id' branch-runs.json)
           while IFS= read -r run_id; do
             [[ -z "$run_id" ]] || gh api -X POST "repos/$GH_REPO/actions/runs/$run_id/cancel" >/dev/null || true
           done <<< "$old_runs"
