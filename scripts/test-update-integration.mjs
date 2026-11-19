@@ -4,7 +4,7 @@ import console from 'node:console';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -49,8 +49,10 @@ const testRoot = await mkdtemp(path.join(tmpdir(), 'linksunder-update-integratio
 const quitLogPath = path.join(testRoot, 'update-quit-events.log');
 const startupLogPath = path.join(testRoot, 'update-start-events.log');
 const stopFilePath = path.join(testRoot, 'stop-updated-app');
+const updaterLogPath = path.join(testRoot, 'updater.log');
 await writeFile(quitLogPath, '', 'utf8');
 await writeFile(startupLogPath, '', 'utf8');
+await writeFile(updaterLogPath, '', 'utf8');
 assert.ok(path.resolve(testRoot).startsWith(path.resolve(tmpdir()) + path.sep));
 assert.ok(path.basename(testRoot).startsWith('linksunder-update-integration-'));
 const dataDirectory = path.join(testRoot, 'user-data');
@@ -76,6 +78,14 @@ let oldProcess;
 let oldBrowser;
 let appImagePath;
 let windowsUninstaller;
+
+function processSnapshot() {
+  const result = process.platform === 'win32'
+    ? spawnSync('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf8', timeout: 5000, maxBuffer: 2 * 1024 * 1024 })
+    : spawnSync('ps', ['-eo', 'pid,ppid,args'], { encoding: 'utf8', timeout: 5000, maxBuffer: 2 * 1024 * 1024 });
+  if (result.error) return result.error.message;
+  return (result.stdout || '').split(/\r?\n/).filter((line) => /LinkSunder|linksunder-update/i.test(line)).slice(-30).join('\n') || '(no LinkSunder process names found)';
+}
 
 function runProcess(executable, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -271,6 +281,8 @@ async function connectToUpdatedApp(port) {
     }
     const startupEvents = await readFile(startupLogPath, 'utf8').catch((error) => 'Could not read startup events: ' + error.message);
     const quitEvents = await readFile(quitLogPath, 'utf8').catch((error) => 'Could not read quit events: ' + error.message);
+    const updaterLog = await readFile(updaterLogPath, 'utf8').catch((error) => 'Could not read updater log: ' + error.message);
+    const processes = processSnapshot();
     const debugEndpoints = await Promise.all(['json/version', 'json/list'].map(async (name) => {
       try {
         const response = await fetch(`${endpoint}/${name}`, { signal: globalThis.AbortSignal.timeout(1500) });
@@ -279,7 +291,7 @@ async function connectToUpdatedApp(port) {
         return { name, error: error.message };
       }
     }));
-    throw new Error('The updated application did not restart with its isolated verification window. Startup events: ' + (startupEvents || '(none)') + '; previous-app quit events: ' + (quitEvents || '(none)') + '; CDP pages: ' + JSON.stringify(pageUrls) + '; debug endpoints: ' + JSON.stringify(debugEndpoints));
+    throw new Error('The updated application did not restart with its isolated verification window. Startup events: ' + (startupEvents || '(none)') + '; previous-app quit events: ' + (quitEvents || '(none)') + '; updater log tail: ' + updaterLog.slice(-6000) + '; process snapshot: ' + processes + '; CDP pages: ' + JSON.stringify(pageUrls) + '; debug endpoints: ' + JSON.stringify(debugEndpoints));
   } catch (error) {
     if (browser) await withTimeout('close an unverified updated application', browser.close(), 10000).catch(() => {});
     throw error;
@@ -369,6 +381,7 @@ try {
     LINKSUNDER_UPDATE_TEST_STOP_FILE: stopFilePath,
     CI: 'true',
     LINKSUNDER_UPDATE_TEST_QUIT_LOG: quitLogPath,
+    LINKSUNDER_UPDATE_TEST_UPDATER_LOG: updaterLogPath,
     ...(platform === 'windows'
       ? { LOCALAPPDATA: path.join(testRoot, 'local-app-data'), APPDATA: path.join(testRoot, 'roaming-app-data') }
       : {
@@ -438,8 +451,12 @@ try {
   const confirmationExpression = [
     "const path = process.getBuiltinModule('node:path');",
     "const moduleApi = process.getBuiltinModule('node:module');",
-    "const { app, dialog } = moduleApi.createRequire(path.join(process.resourcesPath, 'app.asar', 'desktop', 'main.cjs'))('electron');",
+    "const appRequire = moduleApi.createRequire(path.join(process.resourcesPath, 'app.asar', 'desktop', 'main.cjs'));",
+    "const { app, dialog } = appRequire('electron');",
+    "const { autoUpdater } = appRequire('electron-updater');",
     "const fs = process.getBuiltinModule('node:fs');",
+    "const updaterLog = (level, ...items) => { try { fs.appendFileSync(process.env.LINKSUNDER_UPDATE_TEST_UPDATER_LOG, '[' + level + '] ' + items.map((item) => item?.stack || String(item)).join(' ') + String.fromCharCode(10)); } catch {} };",
+    "autoUpdater.logger = { info: (...items) => updaterLog('info', ...items), warn: (...items) => updaterLog('warn', ...items), error: (...items) => updaterLog('error', ...items), debug: (...items) => updaterLog('debug', ...items) };",
     "const record = (event) => fs.appendFileSync(process.env.LINKSUNDER_UPDATE_TEST_QUIT_LOG, event + String.fromCharCode(10));",
     "app.on('before-quit', () => record('before-quit'));",
     "app.on('will-quit', () => record('will-quit'));",
