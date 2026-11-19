@@ -79,10 +79,38 @@ let oldBrowser;
 let appImagePath;
 let windowsUninstaller;
 
+function windowsInstalledProcesses(stop = false) {
+  const script = [
+    "$install = [IO.Path]::GetFullPath($env:LINKSUNDER_TEST_INSTALL_DIRECTORY)",
+    "$prefix = $install + [IO.Path]::DirectorySeparatorChar",
+    "$processes = @(Get-CimInstance -ClassName Win32_Process | Where-Object { $_.Name -eq 'LinkSunder.exe' -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })",
+    "if ($env:LINKSUNDER_TEST_STOP_INSTALLED_PROCESSES -eq 'true') { foreach ($item in $processes) { Stop-Process -Id $item.ProcessId -Force -ErrorAction SilentlyContinue } }",
+    "$processes | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress",
+  ].join('; ');
+  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    encoding: 'utf8',
+    timeout: 10000,
+    maxBuffer: 2 * 1024 * 1024,
+    env: {
+      ...process.env,
+      LINKSUNDER_TEST_INSTALL_DIRECTORY: installDirectory,
+      LINKSUNDER_TEST_STOP_INSTALLED_PROCESSES: stop ? 'true' : 'false',
+    },
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error('Could not inspect installed LinkSunder processes: ' + result.stderr);
+  const output = (result.stdout || '').trim();
+  if (!output) return [];
+  const parsed = JSON.parse(output);
+  return Array.isArray(parsed) ? parsed : [parsed];
+}
+
 function processSnapshot() {
-  const result = process.platform === 'win32'
-    ? spawnSync('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf8', timeout: 5000, maxBuffer: 2 * 1024 * 1024 })
-    : spawnSync('ps', ['-eo', 'pid,ppid,args'], { encoding: 'utf8', timeout: 5000, maxBuffer: 2 * 1024 * 1024 });
+  if (platform === 'windows') {
+    try { return JSON.stringify(windowsInstalledProcesses()); }
+    catch (error) { return error.message; }
+  }
+  const result = spawnSync('ps', ['-eo', 'pid,ppid,args'], { encoding: 'utf8', timeout: 5000, maxBuffer: 2 * 1024 * 1024 });
   if (result.error) return result.error.message;
   return (result.stdout || '').split(/\r?\n/).filter((line) => /LinkSunder|linksunder-update/i.test(line)).slice(-30).join('\n') || '(no LinkSunder process names found)';
 }
@@ -401,7 +429,7 @@ try {
   const inspectorUrl = await waitForInspector(oldProcess);
   const opened = await connectToUpdatedApp(debugPort);
   oldBrowser = opened.browser;
-  const page = opened.page;
+  let page = opened.page;
   phase(`verify v${oldVersion} baseline and preserved report`);
   await page.getByRole('heading', { name: 'Build for the unexpected.' }).waitFor({ timeout: 30000 });
   const initialState = await updateState(page);
@@ -485,6 +513,38 @@ try {
   assert.equal(oldExit.code, 0, 'The previous app exited abnormally: ' + JSON.stringify(oldExit));
   await oldBrowser?.close().catch(() => {});
   oldBrowser = undefined;
+  if (platform === 'windows') {
+    phase('confirm the NSIS installer relaunched the updated app');
+    const relaunchedProcesses = await waitUntil(
+      'the installed Windows app to launch after update',
+      () => windowsInstalledProcesses(),
+      (items) => items.length > 0,
+      30000,
+    );
+    assert.ok(
+      relaunchedProcesses.some((item) => path.resolve(item.ExecutablePath).toLowerCase() === path.resolve(oldExecutable).toLowerCase()),
+      'The installer should relaunch LinkSunder from the isolated installation directory.',
+    );
+    const stoppedProcesses = windowsInstalledProcesses(true);
+    assert.ok(stoppedProcesses.length > 0, 'The test should attach its isolated diagnostics after observing the installer relaunch.');
+    await waitUntil(
+      'the installer-launched app to close for isolated verification',
+      () => windowsInstalledProcesses(),
+      (items) => items.length === 0,
+      15000,
+    );
+    phase('launch the installed v0.5.0 app with isolated verification');
+    oldProcess = spawn(oldExecutable, ['--inspect=0', `--remote-debugging-port=${debugPort}`], {
+      env: appEnvironment,
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+    });
+    await waitForInspector(oldProcess);
+    const verifiedApp = await connectToUpdatedApp(debugPort);
+    oldBrowser = verifiedApp.browser;
+    page = verifiedApp.page;
+  }
+
   phase('verify the installed v0.5.0 window and retained settings');
   let startupEvents;
   try {
