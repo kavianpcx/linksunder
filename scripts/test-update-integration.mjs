@@ -82,8 +82,7 @@ let windowsUninstaller;
 function windowsInstalledProcesses(stop = false) {
   const script = [
     "$install = [IO.Path]::GetFullPath($env:LINKSUNDER_TEST_INSTALL_DIRECTORY)",
-    "$prefix = $install + [IO.Path]::DirectorySeparatorChar",
-    "$processes = @(Get-CimInstance -ClassName Win32_Process | Where-Object { $_.Name -eq 'LinkSunder.exe' -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) })",
+    "$processes = @(Get-CimInstance -ClassName Win32_Process | Where-Object { $_.Name -eq 'LinkSunder.exe' -and $_.ExecutablePath -and $_.ExecutablePath -like ('*' + $env:LINKSUNDER_TEST_INSTALL_MARKER + '*') })",
     "if ($env:LINKSUNDER_TEST_STOP_INSTALLED_PROCESSES -eq 'true') { foreach ($item in $processes) { Stop-Process -Id $item.ProcessId -Force -ErrorAction SilentlyContinue } }",
     "$processes | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress",
   ].join('; ');
@@ -94,6 +93,7 @@ function windowsInstalledProcesses(stop = false) {
     env: {
       ...process.env,
       LINKSUNDER_TEST_INSTALL_DIRECTORY: installDirectory,
+      LINKSUNDER_TEST_INSTALL_MARKER: path.basename(testRoot),
       LINKSUNDER_TEST_STOP_INSTALLED_PROCESSES: stop ? 'true' : 'false',
     },
   });
@@ -521,9 +521,15 @@ try {
       (items) => items.length > 0,
       30000,
     );
+    const installMarker = path.basename(testRoot).toLowerCase();
     assert.ok(
-      relaunchedProcesses.some((item) => path.resolve(item.ExecutablePath).toLowerCase() === path.resolve(oldExecutable).toLowerCase()),
-      'The installer should relaunch LinkSunder from the isolated installation directory.',
+      relaunchedProcesses.some((item) => {
+        const executablePath = String(item.ExecutablePath || '').toLowerCase();
+        return executablePath.includes(installMarker)
+          && path.basename(path.dirname(executablePath)) === 'installed-app'
+          && path.basename(executablePath) === 'linksunder.exe';
+      }),
+      'The installer should relaunch LinkSunder from the isolated installation directory. Processes: ' + JSON.stringify(relaunchedProcesses),
     );
     const stoppedProcesses = windowsInstalledProcesses(true);
     assert.ok(stoppedProcesses.length > 0, 'The test should attach its isolated diagnostics after observing the installer relaunch.');
@@ -589,6 +595,14 @@ try {
     const oldProcessExit = new Promise((resolve) => oldProcess.once('exit', resolve));
     oldProcess.kill();
     await withTimeout('stop the previous app after failure', oldProcessExit, 10000).catch(() => {});
+  }
+  if (platform === 'windows') {
+    try {
+      windowsInstalledProcesses(true);
+      await waitUntil('installed Windows app processes to stop', () => windowsInstalledProcesses(), (items) => items.length === 0, 10000);
+    } catch (error) {
+      console.warn('Could not stop isolated Windows app processes: ' + error.message);
+    }
   }
   if (windowsUninstaller) await runProcess(windowsUninstaller, ['/S'], { timeout: 60000 }).catch(() => {});
   if (server?.listening) {
