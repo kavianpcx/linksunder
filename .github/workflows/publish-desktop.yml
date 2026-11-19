@@ -82,7 +82,7 @@ jobs:
       - name: Verify the release is new or an approved draft and validate artifacts
         run: |
           set -euo pipefail
-          release_id=$(gh api "repos/$GH_REPO/releases?per_page=100" --jq --arg tag "$TAG" '[.[] | select(.tag_name == $tag)][0].id // empty')
+          release_id=$(gh api "repos/$GH_REPO/releases?per_page=100" | jq -r --arg tag "$TAG" '[.[] | select(.tag_name == $tag)][0].id // empty')
           if [[ -n "$release_id" ]]; then
             gh api "repos/$GH_REPO/releases/$release_id" > existing-release.json
             jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true' existing-release.json >/dev/null || {
@@ -129,7 +129,7 @@ jobs:
             gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$BUILD_SHA" -F force=true >/dev/null
             for file in "${assets[@]}" SHA256SUMS.txt; do
               name=$(basename "$file")
-              previous_asset=$(gh api "repos/$GH_REPO/releases/$EXISTING_RELEASE_ID/assets?per_page=100" --jq --arg name "$name" '[.[] | select(.name == $name)][0].id // empty')
+              previous_asset=$(gh api "repos/$GH_REPO/releases/$EXISTING_RELEASE_ID/assets?per_page=100" | jq -r --arg name "$name" '[.[] | select(.name == $name)][0].id // empty')
               if [[ -n "$previous_asset" ]]; then
                 gh api -X DELETE "repos/$GH_REPO/releases/assets/$previous_asset" >/dev/null
               fi
