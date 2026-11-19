@@ -497,7 +497,7 @@ try {
   } catch (error) {
     const updates = await readFile(updaterLogPath, 'utf8').catch((readError) => 'Could not read updater log: ' + readError.message);
     const quits = await readFile(quitLogPath, 'utf8').catch((readError) => 'Could not read quit log: ' + readError.message);
-    throw new Error(error.message + '\nUpdater log tail: ' + updates.slice(-10000) + '\nPrevious app quit events: ' + quits + '\nProcesses: ' + processSnapshot());
+    throw new Error(error.message + '\nUpdater log tail: ' + updates.slice(-10000) + '\nPrevious app quit events: ' + quits + '\nProcesses: ' + processSnapshot(), { cause: error });
   }
   const finalState = startupEvents.filter((entry) => entry.event === 'window-verification' && entry.version === currentVersion).at(-1);
   assert.equal(finalState.currentVersion, currentVersion);
