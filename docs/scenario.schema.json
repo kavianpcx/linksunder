@@ -16,6 +16,7 @@
       "default": "offline",
       "type": "string",
       "enum": [
+        "health",
         "offline",
         "failure",
         "slow"
@@ -71,6 +72,17 @@
             "default": "",
             "type": "string",
             "maxLength": 500
+          },
+          "locator": {
+            "default": "css",
+            "type": "string",
+            "enum": [
+              "css",
+              "button",
+              "link",
+              "label",
+              "text"
+            ]
           },
           "value": {
             "default": "",

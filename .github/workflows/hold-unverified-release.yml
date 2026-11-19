@@ -1,0 +1,42 @@
+name: Hold unverified v0.5.0 release
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize]
+permissions:
+  actions: write
+  contents: write
+jobs:
+  draft-unverified-release:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'test/cross-version-updater-v0-5'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel superseded validation runs for this branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/actions/runs?branch=$PR_BRANCH&per_page=100" > branch-runs.json
+          old_runs=$(jq -r --arg sha "$PR_SHA" '.workflow_runs[] | select(.head_sha != $sha and (.status == "queued" or .status == "in_progress") and (.name == "CI" or .name == "Desktop packages")) | .id' branch-runs.json)
+          while IFS= read -r run_id; do
+            [[ -z "$run_id" ]] || gh api -X POST "repos/$GH_REPO/actions/runs/$run_id/cancel" >/dev/null || true
+          done <<< "$old_runs"
+      - name: Keep the unverified release private until the real update test passes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          release_id=$(gh api "repos/$GH_REPO/releases?per_page=100" --jq '[.[] | select(.tag_name == "v0.5.0")][0].id // empty')
+          [[ -n "$release_id" ]]
+          is_draft=$(gh api "repos/$GH_REPO/releases/$release_id" --jq '.draft')
+          if [[ "$is_draft" != true ]]; then
+            gh api -X PATCH "repos/$GH_REPO/releases/$release_id" -F draft=true >/dev/null
+          fi
+          gh api "repos/$GH_REPO/releases/$release_id" --jq '.draft' | grep -qx true
+

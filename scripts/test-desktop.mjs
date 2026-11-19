@@ -71,26 +71,27 @@ try {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
   await page.getByRole('button', { name: 'New test', exact: true }).click();
   await page.getByLabel('Scenario name').fill('Desktop application smoke test');
-  await page.getByRole('button', { name: 'Add step' }).click();
-  await page.getByLabel('Step 1 selector').fill('#note');
+  await page.getByLabel('Website URL').fill(new URL(page.url()).origin + '/demo/fixed');
   await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
-  await page.getByRole('button', { name: 'Run Test', exact: true }).click();
+  await page.getByRole('button', { name: 'Run Health Check', exact: true }).click();
   await page.getByRole('link', { name: 'Download JSON Report' }).waitFor({ timeout: 30000 });
-  assert.equal(await page.locator('.heading .badge').textContent(), 'NOT TESTED');
+  assert.equal(await page.locator('.heading .badge').textContent(), 'PASS');
   const origin = new URL(page.url()).origin;
   const runs = await page.evaluate(async () => (await fetch('/api/runs')).json());
   assert.equal(runs.length, 1);
   assert.ok(runs[0].duration > 0);
-  assert.equal(runs[0].assertions, 1);
-  assert.equal(runs[0].passed, 1);
+  assert.equal(runs[0].assertions, 4);
+  assert.equal(runs[0].passed, 4);
   const closed = page.waitForEvent('close');
-  await page.getByRole('button', { name: 'Close window' }).click();
-  await closed;
+  await Promise.all([
+    page.getByRole('button', { name: 'Close window' }).click().catch(() => {}),
+    closed,
+  ]);
   await app.close().catch(() => {});
   await new Promise((resolve) => setTimeout(resolve, 1200));
   await assert.rejects(fetch(origin + '/api/runs'), 'Closing the app must stop its local server');
   console.log(
-    'Desktop smoke passed: app window, isolated renderer, real browser assertion, report and engine shutdown.',
+    'Desktop smoke passed: app window, isolated renderer, evidence-based health check, report and engine shutdown.',
   );
 } finally {
   await app.close().catch(() => {});

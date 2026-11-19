@@ -143,7 +143,7 @@ class UpdateController {
       this.set({ message: rechecked?.message || 'An operation started. Finish it before installing the update.' });
       return false;
     }
-    this.updater.quitAndInstall(false, true);
+    this.updater.quitAndInstall(true, true);
     return true;
   }
 }

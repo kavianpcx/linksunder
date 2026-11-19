@@ -14,7 +14,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -50,6 +50,10 @@ jobs:
         if: runner.os == 'Windows'
       - run: node scripts/write-update-metadata.mjs linux
         if: runner.os == 'Linux'
+      - run: npm run test:update-integration
+        if: runner.os == 'Windows'
+      - run: xvfb-run --auto-servernum bash -c 'openbox --sm-disable & sleep 1; npm run test:update-integration'
+        if: runner.os == 'Linux'
       - run: npm run test:desktop
         if: runner.os == 'Windows'
         env:
@@ -69,3 +73,4 @@ jobs:
             release/latest.yml
             release/latest-linux.yml
           if-no-files-found: error
+

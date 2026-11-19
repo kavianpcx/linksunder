@@ -26,6 +26,7 @@
     "desktop:pack": "npm run build && electron-builder --dir",
     "desktop:dist": "npm run build && electron-builder --publish never",
     "test:desktop": "node scripts/test-desktop.mjs",
+    "test:update-integration": "node scripts/test-update-integration.mjs",
     "benchmark:history": "tsx scripts/benchmark-history.ts"
   },
   "dependencies": {
@@ -61,3 +62,4 @@
   "main": "desktop/main.cjs",
   "author": "LinkSunder contributors"
 }
+

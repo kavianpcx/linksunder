@@ -18,4 +18,5 @@ LinkSunder v0.5.0 improves the accuracy of resilience results, adds a focused AP
 - JSON Schema validation supports only the documented subset; it is not a complete JSON Schema implementation.
 - In-app updates are supported for Windows NSIS and Linux AppImage. Windows portable ZIP and Linux DEB updates remain manual.
 - Packages are not commercially code-signed. SHA-512 metadata is verified by the updater, but checksums do not establish publisher identity.
-- Cross-version update installation must be validated with isolated release packages. No pause/resume behavior is advertised.
+- The desktop package workflow upgrades isolated v0.4.0 Windows NSIS and Linux AppImage installations from a local test feed before release. It verifies real progress, cancellation, a fresh retry from byte zero, package verification, installation, report persistence, and appearance preference persistence. No pause/resume behavior is advertised; an interrupted download must restart.
+
