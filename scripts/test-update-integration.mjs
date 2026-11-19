@@ -486,12 +486,19 @@ try {
   await oldBrowser?.close().catch(() => {});
   oldBrowser = undefined;
   phase('verify the installed v0.5.0 window and retained settings');
-  const startupEvents = await waitUntil(
-    'the updated renderer to report its version and preferences',
-    readUpdatedStartupEvents,
-    (events) => events.some((entry) => entry.event === 'window-verification' && entry.version === currentVersion),
-    90000,
-  );
+  let startupEvents;
+  try {
+    startupEvents = await waitUntil(
+      'the updated renderer to report its version and preferences',
+      readUpdatedStartupEvents,
+      (events) => events.some((entry) => entry.event === 'window-verification' && entry.version === currentVersion),
+      90000,
+    );
+  } catch (error) {
+    const updates = await readFile(updaterLogPath, 'utf8').catch((readError) => 'Could not read updater log: ' + readError.message);
+    const quits = await readFile(quitLogPath, 'utf8').catch((readError) => 'Could not read quit log: ' + readError.message);
+    throw new Error(error.message + '\nUpdater log tail: ' + updates.slice(-10000) + '\nPrevious app quit events: ' + quits + '\nProcesses: ' + processSnapshot());
+  }
   const finalState = startupEvents.filter((entry) => entry.event === 'window-verification' && entry.version === currentVersion).at(-1);
   assert.equal(finalState.currentVersion, currentVersion);
   assert.equal(finalState.supported, true, 'The installed package must remain eligible for its next in-app update.');
