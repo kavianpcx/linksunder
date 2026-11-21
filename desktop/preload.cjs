@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('linksunderDesktop', {
   getUpdateState: () => ipcRenderer.invoke('linksunder:update-state'),
   checkForUpdates: () => ipcRenderer.invoke('linksunder:check-updates'),
   downloadUpdate: () => ipcRenderer.invoke('linksunder:download-update'),
+  pauseUpdateDownload: () => ipcRenderer.invoke('linksunder:pause-update-download'),
   cancelUpdateDownload: () => ipcRenderer.invoke('linksunder:cancel-update-download'),
   installUpdate: () => ipcRenderer.invoke('linksunder:install-update'),
   openReportDirectory: () => ipcRenderer.invoke('linksunder:open-report-directory'),

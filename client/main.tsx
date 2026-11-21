@@ -20,6 +20,7 @@ import {
   Minus,
   Network,
   Moon,
+  Pause,
   Play,
   Plus,
   Save,
@@ -100,10 +101,28 @@ const appearanceOptions = [
   { value: 'dark', label: 'Dark' },
   { value: 'light', label: 'Light' },
 ];
+const supportedTimeZones = (Intl as unknown as { supportedValuesOf?: (key: 'timeZone') => string[] })
+  .supportedValuesOf?.('timeZone') ?? [
+    'Africa/Cairo', 'Africa/Johannesburg', 'America/Anchorage', 'America/Chicago',
+    'America/Denver', 'America/Los_Angeles', 'America/New_York', 'America/Sao_Paulo',
+    'Asia/Dubai', 'Asia/Kolkata', 'Asia/Seoul', 'Asia/Shanghai', 'Asia/Tehran',
+    'Asia/Tokyo', 'Australia/Sydney', 'Europe/Berlin', 'Europe/London',
+  ];
 const timeZoneOptions = [
   { value: 'local', label: 'Local system time' },
   { value: 'UTC', label: 'UTC' },
+  ...supportedTimeZones.filter((zone) => zone !== 'UTC').map((zone) => ({ value: zone, label: zone })),
 ];
+function initialTimeZone() {
+  const stored = localStorage.getItem('timeZone');
+  if (!stored || stored === 'local') return 'local';
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: stored });
+    return stored;
+  } catch {
+    return 'local';
+  }
+}
 function formatBytes(value?: number) {
   if (!Number.isFinite(value) || value === undefined || value <= 0) return '—';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -111,6 +130,12 @@ function formatBytes(value?: number) {
   let unit = 0;
   while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+function formatUpdateProgress(progress: NonNullable<UpdateState['progress']>) {
+  const remaining = Math.max(0, progress.total - progress.transferred);
+  const byteCount = (value: number) => value === 0 ? '0 B' : formatBytes(value);
+  const speed = progress.bytesPerSecond > 0 ? `${formatBytes(progress.bytesPerSecond)}/s` : '—';
+  return `${byteCount(progress.transferred)} of ${byteCount(progress.total)} · ${byteCount(remaining)} remaining · ${speed}`;
 }
 const initial = () =>
   scenarioDraftSchema.parse({
@@ -185,7 +210,7 @@ function App() {
   const pendingRef = useRef(false);
   const [cancelling, setCancelling] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
-  const [timeZone, setTimeZone] = useState(localStorage.getItem('timeZone') === 'UTC' ? 'UTC' : 'local');
+  const [timeZone, setTimeZone] = useState(initialTimeZone);
   const [timeout, setTimeoutValue] = useState(Number(localStorage.getItem('timeout') || 10000));
   const [defaultScreenshots, setDefaultScreenshots] = useState(localStorage.getItem('defaultScreenshots') === 'true');
   const [json, setJson] = useState('');
@@ -219,6 +244,7 @@ function App() {
   const [geolocationNotice, setGeolocationNotice] = useState('');
   const [updateState, setUpdateState] = useState<UpdateState>();
   const [updatePanelDismissed, setUpdatePanelDismissed] = useState(false);
+  const [updateToastExpanded, setUpdateToastExpanded] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
   const refreshHistory = useCallback(async () => {
     try {
@@ -495,6 +521,7 @@ function App() {
   }
   async function checkForUpdates() {
     try {
+      setUpdatePanelDismissed(false);
       const state = await window.linksunderDesktop?.checkForUpdates();
       if (state) setUpdateState(state);
     } catch (reason) {
@@ -503,11 +530,16 @@ function App() {
   }
   async function downloadUpdate() {
     try {
+      setUpdatePanelDismissed(false);
       const state = await window.linksunderDesktop?.downloadUpdate();
       if (state) setUpdateState(state);
     } catch (reason) {
       setUpdateState((current) => current ? { ...current, status: 'error', message: (reason as Error).message } : current);
     }
+  }
+  async function pauseUpdateDownload() {
+    try { await window.linksunderDesktop?.pauseUpdateDownload(); }
+    catch (reason) { setUpdateState((current) => current ? { ...current, message: (reason as Error).message } : current); }
   }
   async function cancelUpdateDownload() {
     try { await window.linksunderDesktop?.cancelUpdateDownload(); }
@@ -1489,21 +1521,22 @@ function App() {
                 <p className="hint">Locations are estimates, not proof of a server's physical location. CDN, anycast, proxy, VPN, and shared hosting addresses can be misleading. Use current data under the database provider's license.</p>
               </section>
               <section className="panel form settings-section updates-section">
-                <div className="panel-head"><div><h2>Software updates</h2><p className="hint">LinkSunder checks only when you choose Check for Updates. It never downloads or installs in the background.</p></div><span className={`badge ${updateState?.status === 'current' ? 'pass' : ''}`}>{updateState?.status === 'ready' ? 'Update ready' : updateState?.status === 'downloading' ? 'Downloading' : updateState?.status === 'checking' ? 'Checking' : updateState?.status === 'unsupported' ? 'Manual update' : updateState?.status === 'available' ? 'Available' : updateState?.status === 'current' ? 'Up to date' : 'Not checked'}</span></div>
+                <div className="panel-head"><div><h2>Software updates</h2><p className="hint">LinkSunder checks only when you choose Check for Updates. It never downloads or installs in the background.</p></div><span className={`badge ${updateState?.status === 'current' ? 'pass' : ''}`}>{updateState?.status === 'ready' ? 'Update ready' : updateState?.status === 'downloading' ? 'Downloading' : updateState?.status === 'paused' ? 'Paused' : updateState?.status === 'checking' ? 'Checking' : updateState?.status === 'unsupported' ? 'Manual update' : updateState?.status === 'available' ? 'Available' : updateState?.status === 'current' ? 'Up to date' : 'Not checked'}</span></div>
                 <div className="update-version-grid"><div><span>Installed version</span><strong>{updateState?.currentVersion || `v${__LINKSUNDER_VERSION__}`}</strong></div><div><span>Latest checked version</span><strong>{updateState?.latestVersion || 'Not checked yet'}</strong></div><div><span>Package update support</span><strong>{updateState?.supportReason || (window.linksunderDesktop ? 'Checking package support…' : 'Use the official release downloads.')}</strong></div><div><span>Last successful check</span><strong>{updateState?.lastChecked ? formatRunTimestamp(updateState.lastChecked) : 'None yet'}</strong></div></div>
                 {updateState?.message && <p role="status" className={updateState.status === 'error' ? 'inline-warning' : 'hint'}>{updateState.message}</p>}
-                {updateState?.supported && <p className="hint">Pause and resume are not supported by the current updater. Cancelling or interrupting a download discards partial data; retry starts from the beginning. Closing LinkSunder never installs an update automatically.</p>}
+                {updateState?.supported && <p className="hint">Pause or close LinkSunder to keep the current download progress. Resume continues after the release metadata is checked again. Cancel removes the partial download. Installation still needs your confirmation.</p>}
                 {updateState?.latestVersion && updateState.releaseNotes && <details className="update-notes"><summary>Release notes for {updateState.latestVersion}</summary><pre>{updateState.releaseNotes}</pre></details>}
                 {updateState?.downloadSize !== undefined && <p className="hint">Download size: {formatBytes(updateState.downloadSize)}</p>}
                 <div className="buttons">
                   {updateState?.supported && <button type="button" className="secondary" onClick={() => void checkForUpdates()} disabled={updateState.status === 'checking' || updateState.status === 'downloading'}><LoaderCircle size={15} className={updateState.status === 'checking' ? 'spin' : undefined} /> Check for Updates</button>}
-                  {updateState?.supported && updateState.latestVersion && ['available', 'cancelled', 'error'].includes(updateState.status) && <button type="button" className="primary" onClick={() => void downloadUpdate()}><Download size={15} />{updateState.status === 'cancelled' || updateState.status === 'error' ? 'Retry Download' : 'Download Update'}</button>}
-                  {updateState?.status === 'downloading' && <button type="button" className="secondary" onClick={() => void cancelUpdateDownload()} disabled={updateState.cancelRequested} aria-busy={updateState.cancelRequested}><Square size={14} />{updateState.cancelRequested ? 'Cancelling…' : 'Cancel Download'}</button>}
+                  {updateState?.supported && updateState.latestVersion && (['available', 'cancelled', 'error'].includes(updateState.status) || updateState.status === 'paused' && updateState.resumeVerified) && <button type="button" className="primary" onClick={() => void downloadUpdate()}>{updateState.status === 'paused' ? <Play size={15} /> : <Download size={15} />}{updateState.status === 'paused' ? 'Resume Download' : updateState.status === 'cancelled' || updateState.status === 'error' ? 'Retry Download' : 'Download Update'}</button>}
+                  {updateState?.status === 'downloading' && <><button type="button" className="secondary" onClick={() => void pauseUpdateDownload()} disabled={updateState.pauseRequested || updateState.cancelRequested} aria-busy={updateState.pauseRequested}><Pause size={14} />{updateState.pauseRequested ? 'Pausing…' : 'Pause Download'}</button><button type="button" className="secondary" onClick={() => void cancelUpdateDownload()} disabled={updateState.cancelRequested || updateState.pauseRequested} aria-busy={updateState.cancelRequested}><Square size={14} />{updateState.cancelRequested ? 'Cancelling…' : 'Cancel Download'}</button></>}
+                  {updateState?.status === 'paused' && <button type="button" className="secondary" onClick={() => void cancelUpdateDownload()} disabled={updateState.cancelRequested} aria-busy={updateState.cancelRequested}><Square size={14} />{updateState.cancelRequested ? 'Cancelling…' : 'Cancel Download'}</button>}
                   {updateState?.status === 'ready' && <button type="button" className="primary" onClick={() => void installUpdate()}><Download size={15} /> Restart &amp; Install</button>}
                   {window.linksunderDesktop ? <button type="button" className="secondary" onClick={openReleasePage}><ExternalLink size={15} /> Official Releases</button> : <a className="secondary" href="https://github.com/kavianpcx/linksunder/releases" target="_blank" rel="noreferrer"><ExternalLink size={15} /> Official Releases</a>}
                 </div>
                 {!window.linksunderDesktop && <p className="hint">In-app updates are available in supported installed desktop packages. You are using the browser preview.</p>}
-                {updateState?.status === 'downloading' && <div className="update-progress" role="status" aria-live="polite"><div><span>{updateState.progress ? `${updateState.progress.percent.toFixed(1)}%` : 'Downloading update…'}</span><span>{updateState.progress ? `${formatBytes(updateState.progress.transferred)} of ${formatBytes(updateState.progress.total)} · ${formatBytes(updateState.progress.bytesPerSecond)}/s` : 'Waiting for download progress'}</span></div><progress aria-label="Update download progress" max={100} value={updateState.progress?.total ? updateState.progress.percent : undefined} /></div>}
+                {(updateState?.status === 'downloading' || updateState?.status === 'paused') && <div className="update-progress" role="status" aria-live="polite"><div><span>{updateState.status === 'paused' ? 'Paused' : updateState.progress ? `${updateState.progress.percent.toFixed(1)}%` : 'Downloading update…'}</span><span>{updateState.progress ? formatUpdateProgress(updateState.progress) : 'Waiting for download progress'}</span></div><progress aria-label="Update download progress" max={100} value={updateState.progress?.total ? updateState.progress.percent : undefined} /></div>}
                 {updateState?.status === 'ready' && <div className="update-ready"><strong>Update Ready</strong><p>The downloaded package passed the updater's SHA-512 integrity check against GitHub release metadata. Checksums confirm integrity, not publisher identity. Public packages are currently unsigned.</p><button type="button" className="secondary" onClick={() => setUpdatePanelDismissed(true)}>Install Later</button></div>}
                 <p className="hint update-security">Downloads use the public LinkSunder GitHub Releases feed and are checked against release SHA-512 metadata. This does not prove the publisher's identity. LinkSunder's public packages are unsigned. Users on v0.3.0 must install the first update-enabled release manually once. Windows portable ZIP and Linux DEB packages use manual updates; installed Windows NSIS and Linux AppImage packages can update in-app.</p>
               </section>
@@ -1511,7 +1544,7 @@ function App() {
                 <h2>Default test preferences</h2>
                 <div className="columns">
                   <SelectField label="Appearance" value={theme} options={appearanceOptions} onChange={setTheme} />
-                  <SelectField label="Time display" value={timeZone} options={timeZoneOptions} onChange={(value) => { setTimeZone(value); localStorage.setItem('timeZone', value === 'UTC' ? 'UTC' : 'local'); }} />
+                  <SelectField label="Time display" value={timeZone} options={timeZoneOptions} onChange={(value) => { setTimeZone(value); localStorage.setItem('timeZone', value); }} />
                   <NumberField
                     label="Default step timeout (ms)"
                     value={timeout}
@@ -1538,10 +1571,26 @@ function App() {
               </section>
             </>
           )}
-          {window.linksunderDesktop && view !== 'settings' && updateState?.supported && !updatePanelDismissed && (updateState.status === 'downloading' || updateState.status === 'ready') && <aside className="update-toast" aria-label="Software update">
-            <div className="update-toast-head"><strong>{updateState.status === 'ready' ? 'Update Ready' : 'Downloading LinkSunder update'}</strong><span>{updateState.latestVersion || ''}</span></div>
-            {updateState.status === 'downloading' && <><p role="status">{updateState.progress ? `${updateState.progress.percent.toFixed(1)}% · ${formatBytes(updateState.progress.transferred)} of ${formatBytes(updateState.progress.total)} · ${formatBytes(updateState.progress.bytesPerSecond)}/s` : 'Waiting for download progress'}</p><progress aria-label="Update download progress" max={100} value={updateState.progress?.total ? updateState.progress.percent : undefined} /><button type="button" className="secondary" onClick={() => void cancelUpdateDownload()} disabled={updateState.cancelRequested} aria-busy={updateState.cancelRequested}><Square size={14} />{updateState.cancelRequested ? 'Cancelling…' : 'Cancel Download'}</button></>}
-            {updateState.status === 'ready' && <><p role="status">Download verified. Restart when convenient.</p><div className="buttons"><button type="button" className="primary" onClick={() => void installUpdate()}><Download size={15} /> Restart &amp; Install</button><button type="button" className="secondary" onClick={() => setUpdatePanelDismissed(true)}>Install Later</button></div></>}
+          {window.linksunderDesktop && view !== 'settings' && updateState?.supported && !updatePanelDismissed && ['downloading', 'paused', 'ready'].includes(updateState.status) && <aside className="update-toast" aria-label="Software update">
+            <div className="update-toast-head">
+              <div><strong>{updateState.status === 'ready' ? 'Update ready' : updateState.status === 'paused' ? 'Update paused' : 'Downloading update'}</strong><span>{updateState.latestVersion ? `Version ${updateState.latestVersion}` : 'LinkSunder'}</span></div>
+              <button type="button" className="update-details-toggle" aria-expanded={updateToastExpanded} aria-controls="update-toast-details" onClick={() => setUpdateToastExpanded((expanded) => !expanded)}>{updateToastExpanded ? 'Hide details' : 'Details'}</button>
+            </div>
+            {(updateState.status === 'downloading' || updateState.status === 'paused') && <>
+              <p role="status">{updateState.status === 'paused' ? 'Paused · ' : ''}{updateState.progress ? `${updateState.progress.percent.toFixed(1)}% · ${formatUpdateProgress(updateState.progress)}` : 'Preparing update…'}</p>
+              <progress aria-label="Update download progress" max={100} value={updateState.progress?.total ? updateState.progress.percent : undefined} />
+              <div className="update-toast-actions">
+                {updateState.status === 'downloading' && <button type="button" className="secondary" onClick={() => void pauseUpdateDownload()} disabled={updateState.pauseRequested || updateState.cancelRequested}><Pause size={14} />Pause</button>}
+                {updateState.status === 'paused' && updateState.resumeVerified && <button type="button" className="secondary" onClick={() => void downloadUpdate()}><Play size={14} />Resume</button>}
+                <button type="button" className="secondary" onClick={() => void cancelUpdateDownload()} disabled={updateState.cancelRequested || updateState.pauseRequested}><Square size={13} />{updateState.cancelRequested ? 'Cancelling…' : 'Cancel'}</button>
+              </div>
+            </>}
+            {updateState.status === 'ready' && <><p role="status">Verified and ready to install.</p><div className="buttons"><button type="button" className="primary" onClick={() => void installUpdate()}><Download size={15} /> Restart &amp; Install</button><button type="button" className="secondary" onClick={() => setUpdatePanelDismissed(true)}>Install Later</button></div></>}
+            {updateToastExpanded && <div className="update-toast-details" id="update-toast-details">
+              {updateState.progress && <p>{formatUpdateProgress(updateState.progress)}.</p>}
+              {updateState.releaseNotes && <details><summary>Release notes</summary><pre>{updateState.releaseNotes}</pre></details>}
+              <p>Files are checked against the SHA-512 value in the official release metadata before installation.</p>
+            </div>}
           </aside>}
           <footer>
             <span>

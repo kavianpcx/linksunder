@@ -70,6 +70,7 @@ jobs:
             release/*.zip
             release/*.deb
             release/*.AppImage
+            release/*.blockmap
             release/latest.yml
             release/latest-linux.yml
           if-no-files-found: error
