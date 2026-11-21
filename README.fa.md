@@ -5,7 +5,7 @@
 
 ## دانلود نرم‌افزار
 
-**[⬇ دانلود برای ویندوز — فایل نصب EXE](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Windows-x64.exe)** · **[⬇ دانلود برای لینوکس — فایل نصب DEB](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Linux-amd64.deb)**
+**[⬇ دانلود برای ویندوز — فایل نصب EXE](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Windows-x64.exe)** · **[⬇ دانلود برای لینوکس — فایل نصب DEB](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Linux-amd64.deb)**
 
 **دانلود کنید ← نصب کنید ← LinkSunder را باز کنید.** هیچ دستور ترمینالی یا ابزار برنامه‌نویسی لازم نیست.
 در ویندوز، روی فایل EXE دانلودشده دوبار کلیک کنید، نصب را تمام کنید و برنامه را از منوی Start یا میان‌بر دسکتاپ باز کنید.
@@ -19,10 +19,10 @@
 این محصول یک برنامه دسکتاپ با موتور واقعی تست است؛ نسخه محدود به دمو، آزمایشی یا
 دارای امکانات پولی نیست. کاربر عادی لازم نیست Node، npm، Git یا Playwright نصب کند.
 
-- **Windows:** [فایل نصب EXE را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Windows-x64.exe)؛ پس از نصب، LinkSunder را از منوی Start یا میان‌بر دسکتاپ اجرا کنید.
-  برای نسخه قابل‌حمل، [فایل ZIP را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Windows-x64.zip)، کل پوشه را استخراج کنید و LinkSunder.exe را باز کنید.
-- **Linux:** [فایل نصب DEB را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Linux-amd64.deb) و در Ubuntu/Debian با نصب‌کننده گرافیکی سیستم باز کنید؛ سپس برنامه را از فهرست Applications اجرا کنید.
-  در محیط‌های سازگار، [فایل AppImage را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Linux-x86_64.AppImage) و مجوز اجرا را از Properties فعال کنید.
+- **Windows:** [فایل نصب EXE را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Windows-x64.exe)؛ پس از نصب، LinkSunder را از منوی Start یا میان‌بر دسکتاپ اجرا کنید.
+  برای نسخه قابل‌حمل، [فایل ZIP را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Windows-x64.zip)، کل پوشه را استخراج کنید و LinkSunder.exe را باز کنید.
+- **Linux:** [فایل نصب DEB را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Linux-amd64.deb) و در Ubuntu/Debian با نصب‌کننده گرافیکی سیستم باز کنید؛ سپس برنامه را از فهرست Applications اجرا کنید.
+  در محیط‌های سازگار، [فایل AppImage را دانلود کنید](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Linux-x86_64.AppImage) و مجوز اجرا را از Properties فعال کنید.
 - موتور تست و Chromium داخل بسته هستند؛ با باز و بسته‌شدن برنامه خودکار شروع و متوقف می‌شوند.
 - اطلاعات اجرا خارج از محل نصب، در پوشه داده برنامه ذخیره می‌شود. Download Report
   اجازه می‌دهد گزارش را در محل دلخواه ذخیره کنید.
@@ -188,6 +188,7 @@ checksum تغییر فایل را تشخیص می‌دهد اما هویت نا�
 این ابزار جایگزین sandbox امنیتی نیست و DNS rebinding را به‌طور کامل مسدود نمی‌کند.
 گزارش‌ها درخواست، رمز یا کوکی را ثبت نمی‌کنند؛ اما محتوای صفحه می‌تواند خصوصی باشد.
 اسکرین‌شات اختیاری است و فیلدها، `[data-sensitive]` و selectorهای انتخابی پوشانده می‌شوند.
+ورودی تست‌های تاب‌آوری اخیر برای اجرای دوباره در بخش گزارش‌ها روی همین دستگاه نگه‌داری می‌شوند و وارد خروجی JSON یا HTML گزارش نمی‌شوند. گزارش‌های قدیمی‌تر ورودی قابل‌بازیابی برای اجرای دوباره ندارند.
 تأخیر درخواست معادل شبیه‌سازی کامل اینترنت موبایل نیست.
 
 ## توسعه

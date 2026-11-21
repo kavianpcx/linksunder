@@ -8,7 +8,7 @@ your UI preserves the state that matters. No account, cloud service, or AI API.
 
 ### Download the application
 
-**[⬇ Download for Windows — EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Windows-x64.exe)** · **[⬇ Download for Linux — DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Linux-amd64.deb)**
+**[⬇ Download for Windows — EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Windows-x64.exe)** · **[⬇ Download for Linux — DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Linux-amd64.deb)**
 
 **Download → Install → Open LinkSunder.** No terminal commands or developer tools required.
 On Windows, open the downloaded EXE, finish installation, then open LinkSunder from Start or the desktop shortcut.
@@ -27,10 +27,10 @@ There is no trial mode, demo-only edition, account or paid feature gate.
 
 | Platform                             | File                                                                                                                         | What to do                                                                                                            |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Windows 11, x64                      | [Download EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Windows-x64.exe)  | Open the installer, finish installation, then open LinkSunder from Start or the desktop shortcut.                     |
-| Windows, x64 portable                | [Download ZIP](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Windows-x64.zip)            | Extract the entire folder and open `LinkSunder.exe`. Keep its resources beside it.                                    |
-| Ubuntu / Debian desktop, x64         | [Download DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Linux-amd64.deb)  | Open it in the system software installer, install, then launch LinkSunder from Applications.                          |
-| Other compatible Linux desktops, x64 | [Download AppImage](https://github.com/kavianpcx/linksunder/releases/download/v0.5.1/LinkSunder-0.5.1-Linux-x86_64.AppImage) | Allow execution in file Properties, then double-click. System library/FUSE compatibility depends on the distribution. |
+| Windows 11, x64                      | [Download EXE installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Windows-x64.exe)  | Open the installer, finish installation, then open LinkSunder from Start or the desktop shortcut.                     |
+| Windows, x64 portable                | [Download ZIP](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Windows-x64.zip)            | Extract the entire folder and open `LinkSunder.exe`. Keep its resources beside it.                                    |
+| Ubuntu / Debian desktop, x64         | [Download DEB installer](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Linux-amd64.deb)  | Open it in the system software installer, install, then launch LinkSunder from Applications.                          |
+| Other compatible Linux desktops, x64 | [Download AppImage](https://github.com/kavianpcx/linksunder/releases/download/v0.5.2/LinkSunder-0.5.2-Linux-x86_64.AppImage) | Allow execution in file Properties, then double-click. System library/FUSE compatibility depends on the distribution. |
 
 The desktop packages include the application runtime and test Chromium. They start
 their engine automatically on loopback and stop it when the window closes. The
@@ -273,7 +273,10 @@ Requests and redirects are checked; service workers and WebSockets are disabled.
 No saved browser profile, telemetry, request-body/header/cookie logging, or cloud upload.
 Form fields and `[data-sensitive]` elements are masked in opt-in screenshots;
 add extra selectors for other sensitive content. Scenario JSON may contain your
-test inputs — protect it. Treat all reports and screenshots as private.
+test inputs — protect it. Recent resilience test inputs are kept locally so you can
+rerun them from report history; they are not included in JSON or HTML report exports.
+Older reports created before this feature do not have rerunnable inputs. Treat all
+reports and screenshots as private.
 
 This is a trusted, single-user developer tool, **not a sandbox for hostile sites**.
 DNS checks are not connection-level IP pinning and cannot eliminate DNS rebinding.

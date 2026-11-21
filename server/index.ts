@@ -604,8 +604,9 @@ app.post('/api/cancel', async () => {
 });
 app.post('/api/demo', async (_req, reply) => {
   if (executionBusy()) return reply.code(409).send({ error: 'Another check is active.' });
-  const first = await start(demoScenario(origin, 'broken'));
-  return { id: first.id, next: demoScenario(origin, 'fixed') };
+  const firstScenario = demoScenario(origin, 'broken');
+  const first = await start(firstScenario);
+  return { id: first.id, first: firstScenario, next: demoScenario(origin, 'fixed') };
 });
 app.get<{ Params: { id: string; format: string } }>(
   '/api/reports/:id/:format',

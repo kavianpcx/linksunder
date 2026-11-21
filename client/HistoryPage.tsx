@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ChevronLeft, ChevronRight, Download, FileText, LoaderCircle, Search, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, FileText, LoaderCircle, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { HistoryDeleteJob, HistoryPageData, HistoryRecord, HistorySummary } from '../shared/history';
 import { api } from './api';
 import { formatRunTimestamp } from './format-run-timestamp';
+import { getRerunnableScenarioIds, removeRunScenarios } from './rerun-scenarios';
 import { SelectField } from './SelectField';
 
 interface HistoryPageProps {
   summary: HistorySummary;
   onOpenRun: (id: string) => void;
+  onRerunRun: (id: string) => void;
   onOpenNetwork: (id: string) => void;
   onRefresh: () => Promise<void>;
 }
@@ -52,7 +54,7 @@ function pageNumbers(page: number, totalPages: number) {
   return result;
 }
 
-export function HistoryPage({ summary, onOpenRun, onOpenNetwork, onRefresh }: HistoryPageProps) {
+export function HistoryPage({ summary, onOpenRun, onRerunRun, onOpenNetwork, onRefresh }: HistoryPageProps) {
   const [data, setData] = useState<HistoryPageData>();
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -63,6 +65,7 @@ export function HistoryPage({ summary, onOpenRun, onOpenNetwork, onRefresh }: Hi
   const [to, setTo] = useState('');
   const [sort, setSort] = useState('newest');
   const [selected, setSelected] = useState<string[]>([]);
+  const [rerunnableIds, setRerunnableIds] = useState<Set<string>>(() => new Set(getRerunnableScenarioIds()));
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [deleteJob, setDeleteJob] = useState<HistoryDeleteJob>();
   const [busy, setBusy] = useState(false);
@@ -103,6 +106,10 @@ export function HistoryPage({ summary, onOpenRun, onOpenNetwork, onRefresh }: Hi
         .then((result) => {
           if (!live || sequence !== requestSequence.current) return;
           setData(result);
+          const savedScenarioIds = new Set(getRerunnableScenarioIds());
+          setRerunnableIds(new Set(result.items
+            .filter((item) => item.kind === 'run' && savedScenarioIds.has(item.id))
+            .map((item) => item.id)));
           setSelected([]);
           if (result.page !== page) setPage(result.page);
         })
@@ -141,6 +148,10 @@ export function HistoryPage({ summary, onOpenRun, onOpenNetwork, onRefresh }: Hi
         if (updated.status === 'complete' && completedJob.current !== updated.id) {
           completedJob.current = updated.id;
           setNotice(`Deleted ${updated.deleted} of ${updated.total} reports.${updated.failed ? ` ${updated.failed} could not be removed; their files were preserved.` : ''}`);
+          const failedRunIds = new Set(updated.failures.filter((item) => item.kind === 'run').map((item) => item.id));
+          const removedScenarioIds = getRerunnableScenarioIds().filter((id) => !failedRunIds.has(id));
+          removeRunScenarios(removedScenarioIds);
+          setRerunnableIds(failedRunIds);
           setReload((value) => value + 1);
           void onRefresh();
         }
@@ -213,6 +224,12 @@ export function HistoryPage({ summary, onOpenRun, onOpenNetwork, onRefresh }: Hi
         const result = await api<{ deleted: number; failed?: Array<{ id: string; error: string }> }>('/api/history/delete', {
           reports: pendingDelete.items.map(({ id, kind }) => ({ id, kind })),
         });
+        const failedIds = new Set(result.failed?.map((item) => item.id) || []);
+        const removedScenarioIds = pendingDelete.items
+          .filter((item) => item.kind === 'run' && !failedIds.has(item.id))
+          .map((item) => item.id);
+        removeRunScenarios(removedScenarioIds);
+        setRerunnableIds((current) => new Set([...current].filter((id) => !removedScenarioIds.includes(id))));
         setNotice(`${result.deleted} report${result.deleted === 1 ? '' : 's'} deleted from this computer.${result.failed?.length ? ` ${result.failed.length} could not be removed; their files were preserved.` : ''}`);
         setSelected([]);
         setPendingDelete(null);
@@ -248,7 +265,7 @@ export function HistoryPage({ summary, onOpenRun, onOpenNetwork, onRefresh }: Hi
         <div>
           <div className="eyebrow">LOCAL REPORTS</div>
           <h1 id="history-heading" tabIndex={-1}>Reports &amp; history</h1>
-          <p>Open, export, search, or remove previous checks stored on this computer.</p>
+          <p>Open, rerun, export, search, or remove previous checks stored on this computer. Rerun inputs stay local and are not included in report exports.</p>
         </div>
         <button className="secondary" onClick={requestDeleteAll} disabled={!(summary.resilienceCount + summary.networkCount) || !indexReady} title={!indexReady ? 'Available when history indexing finishes' : undefined}>
           <Trash2 size={16} aria-hidden="true" /> Clear all history
@@ -314,6 +331,7 @@ export function HistoryPage({ summary, onOpenRun, onOpenNetwork, onRefresh }: Hi
                     <td>{formatRunTimestamp(item.started)}</td>
                     <td className="history-row-actions">
                       {item.status !== 'running' && <>
+                        {item.kind === 'run' && rerunnableIds.has(item.id) && <button type="button" className="icon-action" aria-label={`Run again for ${item.title}`} data-tooltip="Run again" title="Run again" onClick={() => onRerunRun(item.id)}><RotateCcw size={16} aria-hidden="true" /></button>}
                         <a className="icon-action" aria-label={`Download JSON for ${item.title}`} data-tooltip="Download JSON" href={`${format}/json`}><Download size={16} aria-hidden="true" /></a>
                         <a className="icon-action" aria-label={`Download HTML for ${item.title}`} data-tooltip="Download HTML" href={`${format}/html`}><FileText size={16} aria-hidden="true" /></a>
                       </>}

@@ -15,7 +15,7 @@ import { pipeline } from 'node:stream/promises';
 import { URL } from 'node:url';
 import { chromium } from 'playwright';
 
-const oldVersion = '0.5.0';
+const oldVersion = '0.5.1';
 const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
 const currentVersion = packageJson.version;
 const platform = process.platform === 'win32' ? 'windows' : process.platform === 'linux' ? 'linux' : undefined;

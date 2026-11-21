@@ -1408,6 +1408,13 @@ dd {
 .history-panel .panel-head {
   flex-wrap: wrap;
 }
+.history-panel > .tablewrap {
+  margin: 8px 20px 0;
+}
+.history-panel .history-table th {
+  padding-top: 18px;
+  padding-bottom: 17px;
+}
 .history-toolbar {
   align-items: center;
 }

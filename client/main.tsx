@@ -46,6 +46,7 @@ import { api } from './api';
 import { HistoryPage } from './HistoryPage';
 import { NetworkInspector } from './NetworkInspector';
 import { ApiTestBuilder } from './ApiTestBuilder';
+import { changeScenarioType, getRerunScenario, rememberRunScenario } from './rerun-scenarios';
 import { SelectField } from './SelectField';
 import { NumberField } from './NumberField';
 import type { GeolocationDatabaseInfo, NetworkReport } from '../shared/network';
@@ -318,6 +319,16 @@ function App() {
       setError((reason as Error).message);
     }
   }
+  function rerunSavedRun(id: string) {
+    const saved = getRerunScenario(id);
+    if (!saved) return;
+    setScenario({ ...saved, externalConsent: false });
+    setSavedScenarioName('');
+    setGuidedSetupOpen(false);
+    setError('');
+    setNotice('Previous test inputs loaded. Review them and confirm authorization before running.');
+    setView('create');
+  }
   async function openNetworkReport(id: string) {
     try {
       setSelectedNetwork(await api<NetworkReport>(`/api/network/reports/${id}`));
@@ -354,6 +365,7 @@ function App() {
         for (let i = 0; i < 10; i++) {
           try {
             const r = await api<Run>('/api/runs', next);
+            rememberRunScenario(r.id, next);
             setSelected(r);
             return;
           } catch (e) {
@@ -394,7 +406,8 @@ function App() {
   }
   async function runDemo() {
     await perform(async () => {
-      const d = await api<{ id: string; next: Scenario }>('/api/demo', {});
+      const d = await api<{ id: string; first: Scenario; next: Scenario }>('/api/demo', {});
+      rememberRunScenario(d.id, d.first);
       setNextDemo(d.next);
       setSelected(await api<Run>('/api/runs/' + d.id));
       setView('result');
@@ -924,6 +937,7 @@ function App() {
                   void perform(async () => {
                     const parsed = scenarioSchema.parse(scenario);
                     const r = await api<Run>('/api/runs', parsed);
+                    rememberRunScenario(r.id, parsed);
                     setSelected(r);
                     setView('result');
                   });
@@ -991,7 +1005,7 @@ function App() {
                     onChange={(value) => {
                       const type = value as Scenario['type'];
                       setScenario((current) => ({
-                        ...current,
+                        ...changeScenarioType(current, type),
                         type,
                         name: current.name === scenarioTypeNames[current.type]
                           ? scenarioTypeNames[type]
@@ -1455,6 +1469,7 @@ function App() {
             <HistoryPage
               summary={historySummary}
               onOpenRun={(id) => void openRun(id)}
+              onRerunRun={rerunSavedRun}
               onOpenNetwork={(id) => void openNetworkReport(id)}
               onRefresh={refreshHistory}
             />

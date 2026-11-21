@@ -329,6 +329,22 @@ test('New Test runs an evidence-based health check and a guided API failure work
   expect(report.resilience.disruptionAssertions).toBeGreaterThan(0);
   expect(report.resilience.recoveryRequests).toBeGreaterThan(0);
   expect(report.resilience.recoveryAssertions).toBeGreaterThan(0);
+
+  await page.getByRole('navigation').getByRole('button', { name: 'Reports & history' }).click();
+  const rerun = page.getByRole('button', { name: 'Run again for Guided API failure check' });
+  await expect(rerun).toBeVisible();
+  await rerun.click();
+  await expect(page.getByLabel('Scenario name')).toHaveValue('Guided API failure check');
+  await expect(page.getByLabel('Website URL')).toHaveValue(`${appURL}/demo/fixed`);
+  await expect(page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' })).not.toBeChecked();
+  await expect(page.getByLabel('Step 4 action')).toContainText('Fail API Request');
+  await page.getByRole('combobox', { name: 'Test type' }).click();
+  await page.getByRole('option', { name: 'Slow API Response' }).click();
+  await expect(page.getByLabel('Step 4 action')).toContainText('Delay API Response');
+  await page.getByLabel('Step 7 selector').fill('Sending…');
+  await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
+  await page.getByRole('button', { name: 'Run Resilience Test', exact: true }).click();
+  await expect(page.locator('.heading .badge')).toHaveText('PASS', { timeout: 20000 });
 });
 
 test('Scenario Builder starts a real run and cancels it accessibly', async ({ page }) => {
