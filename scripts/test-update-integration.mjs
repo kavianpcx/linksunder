@@ -615,6 +615,10 @@ try {
     server.closeAllConnections();
     await withTimeout('close the local update feed', new Promise((resolve) => server.close(resolve)), 10000).catch(() => {});
   }
-  await withTimeout('remove the temporary installation', rm(testRoot, { recursive: true, force: true }), 60000).catch((error) => console.warn(error.message));
+  await withTimeout(
+    'remove the temporary installation',
+    rm(testRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 }),
+    60000,
+  ).catch((error) => console.warn(error.message));
   clearTimeout(watchdog);
 }

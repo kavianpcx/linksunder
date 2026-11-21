@@ -100,5 +100,5 @@ try {
     !path.basename(data).startsWith('linksunder-desktop-')
   )
     assert.fail('Unexpected test directory');
-  await rm(data, { recursive: true, force: true });
+  await rm(data, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
 }
