@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2
+
+- Added a small top margin before the report history table for clearer separation from its filters.
+- Added one-click rerun for recent resilience reports, keeping inputs local and outside report exports.
+- Re-checks target authorization before a rerun and adapts the disruption step when the test type changes.
+- Clears saved rerun inputs when the corresponding report is deleted.
+
 ## 0.5.1
 
 - Added system-supported IANA time zones alongside local time and UTC for report timestamps.
