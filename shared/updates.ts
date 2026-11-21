@@ -5,6 +5,7 @@ export type UpdateStatus =
   | 'current'
   | 'available'
   | 'downloading'
+  | 'paused'
   | 'ready'
   | 'cancelled'
   | 'error';
@@ -28,4 +29,6 @@ export interface UpdateState {
   lastChecked?: string;
   progress?: UpdateProgress;
   cancelRequested?: boolean;
+  pauseRequested?: boolean;
+  resumeVerified?: boolean;
 }

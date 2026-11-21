@@ -12,6 +12,7 @@ interface UpdateMock extends EventEmitter {
   autoInstallOnAppQuit: boolean;
   allowPrerelease: boolean;
   allowDowngrade: boolean;
+  updateInfoAndProvider?: { info: { version: string }; provider: unknown };
   checkForUpdates: () => Promise<{ isUpdateAvailable: boolean; updateInfo?: { version: string; releaseNotes?: string; files?: Array<{ size: number }> } } | null>;
   downloadUpdate: (token: FakeToken) => Promise<string[]>;
   quitAndInstall: (isSilent: boolean, isForceRunAfter: boolean) => void;
@@ -67,10 +68,34 @@ describe('desktop update workflow', () => {
       downloadToken.once('cancel', () => reject(new Error('cancelled')));
     }));
     const download = controller.download();
-    expect(controller.cancelDownload()).toBe(true);
+    expect(await controller.cancelDownload()).toBe(true);
     await download;
     expect(token.cancelled).toBe(true);
-    expect(controller.getState()).toMatchObject({ status: 'cancelled', message: expect.stringContaining('partial file is discarded') });
+    expect(controller.getState()).toMatchObject({ status: 'cancelled', message: expect.stringContaining('partial file was removed') });
+  });
+
+  it('pauses a resumable download and resumes only after saved release metadata is checked', async () => {
+    let finishDownload: ((result: { paused: true; progress: { percent: number; transferred: number; total: number; bytesPerSecond: number } }) => void) | undefined;
+    const downloadManager = {
+      getSavedDownload: vi.fn(() => ({ version: '0.4.0', progress: { percent: 25, transferred: 250, total: 1000, bytesPerSecond: 0 } })),
+      matches: vi.fn(async () => true),
+      download: vi.fn(() => new Promise((resolve) => { finishDownload = resolve; })),
+      pause: vi.fn(),
+      cancel: vi.fn(),
+      discard: vi.fn(async () => undefined),
+    };
+    const { controller, updater } = makeController({ downloadManager });
+    updater.updateInfoAndProvider = { info: { version: '0.4.0' }, provider: {} };
+
+    expect(controller.getState()).toMatchObject({ status: 'paused', resumeVerified: false });
+    expect((await controller.check())).toMatchObject({ status: 'paused', resumeVerified: true });
+    const downloading = controller.download();
+    expect(controller.getState().status).toBe('downloading');
+    expect(controller.pauseDownload()).toBe(true);
+    expect(downloadManager.pause).toHaveBeenCalledOnce();
+    finishDownload?.({ paused: true, progress: { percent: 25, transferred: 250, total: 1000, bytesPerSecond: 0 } });
+    await downloading;
+    expect(controller.getState()).toMatchObject({ status: 'paused', resumeVerified: true, progress: { transferred: 250 } });
   });
 
   it('blocks installation during active work and asks before restart', async () => {
@@ -97,6 +122,23 @@ describe('desktop update workflow', () => {
     expect((await controller.check()).status).toBe('error');
     updater.checkForUpdates = vi.fn(async () => ({ isUpdateAvailable: false, updateInfo: { version: '0.3.0' } }));
     expect((await controller.check()).status).toBe('current');
+  });
+
+  it('keeps saved progress locked when release verification fails after restart', async () => {
+    const downloadManager = {
+      getSavedDownload: vi.fn(() => ({ version: '0.4.0', progress: { percent: 25, transferred: 250, total: 1000, bytesPerSecond: 0 } })),
+      matches: vi.fn(async () => true),
+      download: vi.fn(),
+      pause: vi.fn(),
+      cancel: vi.fn(),
+      discard: vi.fn(async () => undefined),
+    };
+    const { controller, updater } = makeController({ downloadManager });
+    updater.checkForUpdates = vi.fn().mockRejectedValue(new Error('offline'));
+    expect(controller.getState()).toMatchObject({ status: 'paused', resumeVerified: false });
+    expect(await controller.check()).toMatchObject({ status: 'paused', resumeVerified: false, progress: { transferred: 250 } });
+    expect(await controller.download()).toMatchObject({ status: 'paused', resumeVerified: false });
+    expect(downloadManager.download).not.toHaveBeenCalled();
   });
 
   it('leaves unsupported packages on a manual release path', async () => {

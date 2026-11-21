@@ -109,6 +109,11 @@ jobs:
             count=$(find packages -type f -name "$name" | wc -l)
             [[ "$count" -eq 1 ]] || { echo "Expected exactly one $name, found $count."; exit 1; }
           done
+          windows_blockmap="LinkSunder-$VERSION-Windows-x64.exe.blockmap"
+          [[ $(find packages -type f -name "$windows_blockmap" | wc -l) -eq 1 ]] || {
+            echo "Expected exactly one $windows_blockmap for differential Windows updates."
+            exit 1
+          }
           for manifest in latest.yml latest-linux.yml; do
             matches=$(find packages -type f -name "$manifest")
             [[ $(printf '%s\n' "$matches" | sed '/^$/d' | wc -l) -eq 1 ]] || { echo "Expected exactly one $manifest updater manifest."; exit 1; }
@@ -116,15 +121,16 @@ jobs:
             grep -Eq '^sha512: [A-Za-z0-9+/=]+$' "$matches"
           done
           mapfile -d '' update_metadata < <(find packages -type f \( -name 'latest.yml' -o -name 'latest-linux.yml' \) -print0)
+          mapfile -d '' update_blockmaps < <(find packages -type f -name '*.blockmap' -print0)
           : > SHA256SUMS.txt
-          for file in "${assets[@]}" "${update_metadata[@]}"; do
+          for file in "${assets[@]}" "${update_blockmaps[@]}" "${update_metadata[@]}"; do
             hash=$(sha256sum "$file" | cut -d ' ' -f1)
             printf '%s  %s\n' "$hash" "$(basename "$file")" >> SHA256SUMS.txt
           done
       - name: Publish the verified release or refresh its approved draft
         run: |
           set -euo pipefail
-          mapfile -d '' assets < <(find packages -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.deb' -o -name '*.AppImage' -o -name 'latest.yml' -o -name 'latest-linux.yml' \) -print0)
+          mapfile -d '' assets < <(find packages -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.blockmap' -o -name 'latest.yml' -o -name 'latest-linux.yml' \) -print0)
           if [[ -n "${EXISTING_RELEASE_ID:-}" ]]; then
             gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$BUILD_SHA" -F force=true >/dev/null
             for file in "${assets[@]}" SHA256SUMS.txt; do

@@ -1,6 +1,6 @@
 {
   "name": "linksunder",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "Local, assertion-driven network resilience testing with Playwright",
@@ -62,4 +62,3 @@
   "main": "desktop/main.cjs",
   "author": "LinkSunder contributors"
 }
-

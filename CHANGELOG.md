@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1
+
+- Added system-supported IANA time zones alongside local time and UTC for report timestamps.
+- Added resumable ranged downloads, blockmap-based differential package updates when a compatible base is available, and pause, resume, cancel, and close-and-resume controls.
+- Added a compact update progress panel with expandable details outside Settings.
+- Published updater blockmaps and AppImage blockmap metadata so supported updates can avoid unchanged package blocks.
+- Kept Network Inspector checks bounded to one authorized host and clarified the limits of its security findings.
+
 ## 0.4.0
 
 - Added indexed, paginated local report history with incremental migration and recoverable bulk deletion.

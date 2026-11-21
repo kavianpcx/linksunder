@@ -15,7 +15,7 @@ import { pipeline } from 'node:stream/promises';
 import { URL } from 'node:url';
 import { chromium } from 'playwright';
 
-const oldVersion = '0.4.0';
+const oldVersion = '0.5.0';
 const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
 const currentVersion = packageJson.version;
 const platform = process.platform === 'win32' ? 'windows' : process.platform === 'linux' ? 'linux' : undefined;
@@ -72,6 +72,7 @@ const manifestPath = path.join(feedDirectory, manifestName);
 const configName = 'app-update.yml';
 const packageInfo = await stat(currentAssetPath);
 await stat(manifestPath);
+const embeddedBlockMapSize = Number((await readFile(manifestPath, 'utf8')).match(/^ {4}blockMapSize: (\d+)$/m)?.[1] || 0);
 
 let server;
 let oldProcess;
@@ -230,6 +231,8 @@ function startFeedServer() {
       response.writeHead(416, { 'content-range': `bytes */${fileInfo.size}` }).end();
       return;
     }
+    const embeddedBlockMapStart = fileInfo.size - embeddedBlockMapSize - 4;
+    const isEmbeddedBlockMap = embeddedBlockMapSize > 0 && start === embeddedBlockMapStart && end === fileInfo.size - 1;
     response.writeHead(match ? 206 : 200, {
       'accept-ranges': 'bytes',
       'content-length': end - start + 1,
@@ -241,7 +244,7 @@ function startFeedServer() {
       response.end();
       return;
     }
-    requests.push({ rangeStart: start });
+    if (!isEmbeddedBlockMap) requests.push({ rangeStart: start, rangeEnd: end });
     const stream = createReadStream(filePath, { start, end, highWaterMark: 256 * 1024 });
     response.once('close', () => stream.destroy());
     try {
@@ -353,7 +356,7 @@ async function prepareOldInstallation(feedUrl) {
       // AppImage layouts place Electron resources under usr/resources or resources.
     }
   }
-  assert.ok(updateConfig, 'The extracted v0.4.0 AppImage must contain resources/app-update.yml.');
+  assert.ok(updateConfig, `The extracted v${oldVersion} AppImage must contain resources/app-update.yml.`);
   await writeFile(updateConfig, `provider: generic\nurl: ${feedUrl}\nupdaterCacheDirName: linksunder-update-integration\nchannel: latest\n`, 'utf8');
   return path.join(extractedRoot, 'AppRun');
 }
@@ -452,10 +455,10 @@ try {
   await waitUntil('the light preference to apply', () => page.evaluate(() => document.documentElement.dataset.theme), (theme) => theme === 'light');
   const originBeforeUpdate = new URL(page.url()).origin;
 
-  phase('check for the v0.5.0 update');
+  phase(`check for the v${currentVersion} update`);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('button', { name: 'Check for Updates', exact: true }).click();
-  const available = await waitUntil('v0.5.0 to be discovered', () => updateState(page), (state) => state.status === 'available' || state.status === 'error');
+  const available = await waitUntil(`v${currentVersion} to be discovered`, () => updateState(page), (state) => state.status === 'available' || state.status === 'error');
   assert.equal(available.status, 'available', `Update discovery failed: ${available.message}`);
   assert.equal(available.latestVersion, currentVersion);
   assert.equal(available.downloadSize, packageInfo.size);
@@ -463,18 +466,21 @@ try {
   phase('download a partial update and confirm real progress');
   await page.getByRole('button', { name: 'Download Update', exact: true }).click();
   await waitUntil('download progress to advance', () => updateState(page), (state) => state.status === 'downloading' && (state.progress?.transferred || 0) > 0, 90000);
+  const firstPackageRangeStart = feed.requests[0]?.rangeStart;
+  assert.ok(Number.isInteger(firstPackageRangeStart), 'The test feed should observe the first update package range.');
   phase('cancel the partial update download');
   await page.getByRole('button', { name: 'Cancel Download', exact: true }).click();
   const cancelled = await waitUntil('the download cancellation', () => updateState(page), (state) => state.status === 'cancelled' || state.status === 'error', 30000);
   assert.equal(cancelled.status, 'cancelled', `The update download did not cancel cleanly: ${cancelled.message}`);
   assert.equal((await updateState(page)).currentVersion, oldVersion);
 
-  phase('retry from byte zero and verify the complete update');
+  const retryStartIndex = feed.requests.length;
+  phase('retry the cancelled download and verify the complete update');
   await page.getByRole('button', { name: 'Retry Download', exact: true }).click();
   const ready = await waitUntil('the retry to download and verify the package', () => updateState(page), (state) => state.status === 'ready' || state.status === 'error', 600000);
   assert.equal(ready.status, 'ready', `The update did not pass package verification: ${ready.message}`);
   assert.ok(feed.requests.length >= 2, 'Cancel and retry should issue separate package requests.');
-  assert.equal(feed.requests[1].rangeStart, 0, 'A cancelled partial package must be discarded; retry must start at byte zero.');
+  assert.equal(feed.requests[retryStartIndex]?.rangeStart, firstPackageRangeStart, 'A cancelled download must retry its first package range rather than continue the discarded partial file.');
 
   const confirmationExpression = [
     "const path = process.getBuiltinModule('node:path');",
@@ -496,7 +502,7 @@ try {
   const configured = await evaluateMain(inspectorUrl, confirmationExpression);
   assert.equal(configured, 'ready', 'The test could not configure the old app confirmation dialog.');
   await delay(600);
-  phase('install the verified update and wait for v0.4.0 to close');
+  phase(`install the verified update and wait for v${oldVersion} to close`);
   const oldAppClosed = oldProcess.exitCode !== null || oldProcess.signalCode !== null
     ? Promise.resolve({ code: oldProcess.exitCode, signal: oldProcess.signalCode })
     : withTimeout('old app process exit', new Promise((resolve) => {
@@ -539,7 +545,7 @@ try {
       (items) => items.length === 0,
       15000,
     );
-    phase('launch the installed v0.5.0 app with isolated verification');
+    phase(`launch the installed v${currentVersion} app with isolated verification`);
     oldProcess = spawn(oldExecutable, ['--inspect=0', `--remote-debugging-port=${debugPort}`], {
       env: appEnvironment,
       stdio: ['ignore', 'ignore', 'pipe'],
@@ -551,7 +557,7 @@ try {
     page = verifiedApp.page;
   }
 
-  phase('verify the installed v0.5.0 window and retained settings');
+  phase(`verify the installed v${currentVersion} window and retained settings`);
   let startupEvents;
   try {
     startupEvents = await waitUntil(
@@ -585,8 +591,8 @@ try {
     (report) => report?.name === sentinel,
     60000,
   );
-  assert.equal(persistedReport?.name, sentinel, 'The v0.4.0 report must remain available after installing v0.5.0.');
-  phase(`cross-version update passed: v${oldVersion} -> v${currentVersion}; progress, cancel, byte-zero retry, verification, install, report and preference persistence`);
+  assert.equal(persistedReport?.name, sentinel, `The v${oldVersion} report must remain available after installing v${currentVersion}.`);
+  phase(`cross-version update passed: v${oldVersion} -> v${currentVersion}; progress, cancel, range retry, verification, install, report and preference persistence`);
 } finally {
   phase('bounded isolated test cleanup');
   await withTimeout('close the updated application', stopUpdatedApplication(), 20000).catch((error) => console.warn(error.message));

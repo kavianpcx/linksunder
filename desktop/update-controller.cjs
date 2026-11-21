@@ -13,12 +13,14 @@ function updateDetails(info = {}) {
   };
 }
 
-const CANCELLED_DOWNLOAD_MESSAGE = 'Update download cancelled. The partial file is discarded; retry starts a fresh download.';
+const CANCELLED_DOWNLOAD_MESSAGE = 'Update download cancelled. The saved partial file was removed.';
+const PAUSED_DOWNLOAD_MESSAGE = 'Update paused. The downloaded data is saved and will be checked before it resumes.';
 
 class UpdateController {
-  constructor({ updater, tokenFactory, publish, getOperations, confirmInstall, initialState }) {
+  constructor({ updater, tokenFactory, downloadManager, publish, getOperations, confirmInstall, initialState }) {
     this.updater = updater;
     this.tokenFactory = tokenFactory;
+    this.downloadManager = downloadManager;
     this.publishCallback = publish;
     this.getOperations = getOperations;
     this.confirmInstall = confirmInstall;
@@ -26,6 +28,18 @@ class UpdateController {
     this.checkPromise = undefined;
     this.downloadPromise = undefined;
     this.token = undefined;
+    this.updateInfoAndProvider = undefined;
+    const savedDownload = downloadManager?.getSavedDownload();
+    if (savedDownload && this.state.supported) {
+      this.state = {
+        ...this.state,
+        status: 'paused',
+        latestVersion: savedDownload.version,
+        progress: savedDownload.progress,
+        resumeVerified: false,
+        message: `A paused update for version ${savedDownload.version} is saved. Check for updates to verify it before resuming.`,
+      };
+    }
     updater.autoDownload = false;
     updater.autoInstallOnAppQuit = false;
     updater.allowPrerelease = false;
@@ -37,7 +51,7 @@ class UpdateController {
       if (this.state.supported) this.set({ ...updateDetails(info), status: 'available', message: 'A verified update is available. Download it when you are ready.', lastChecked: new Date().toISOString(), progress: undefined });
     });
     updater.on('update-not-available', () => {
-      if (this.state.supported) this.set({ status: 'current', message: 'LinkSunder is up to date.', lastChecked: new Date().toISOString(), latestVersion: this.state.currentVersion, releaseNotes: undefined, downloadSize: undefined, progress: undefined });
+      if (this.state.supported) this.set({ status: 'current', message: 'LinkSunder is up to date.', lastChecked: new Date().toISOString(), latestVersion: this.state.currentVersion, releaseNotes: undefined, downloadSize: undefined, progress: undefined, resumeVerified: false });
     });
     updater.on('download-progress', (progress) => {
       if (this.state.status !== 'downloading') return;
@@ -75,20 +89,41 @@ class UpdateController {
     if (!this.state.supported) return this.getState();
     if (this.checkPromise) return this.checkPromise;
     if (this.downloadPromise || this.state.status === 'ready') return this.getState();
-    this.set({ status: 'checking', message: 'Checking the official LinkSunder releases…', progress: undefined, cancelRequested: false });
+    const savedDownload = this.downloadManager?.getSavedDownload();
+    this.set({ status: 'checking', message: 'Checking the official LinkSunder releases…', progress: savedDownload?.progress, cancelRequested: false });
     this.checkPromise = (async () => {
       try {
         const result = await this.updater.checkForUpdates();
         const lastChecked = new Date().toISOString();
         if (!result) throw new Error('No update result was returned.');
+        this.updateInfoAndProvider = this.updater.updateInfoAndProvider || result.updateInfoAndProvider;
         if (result.isUpdateAvailable) {
           const info = result.updateInfo || {};
-          this.set({ ...updateDetails(info), status: 'available', message: 'A verified update is available. Download it when you are ready.', lastChecked });
+          const matchesSaved = this.downloadManager && this.updateInfoAndProvider
+            ? await this.downloadManager.matches(this.updateInfoAndProvider)
+            : false;
+          if (matchesSaved) {
+            const saved = this.downloadManager.getSavedDownload();
+            this.set({ ...updateDetails(info), status: 'paused', message: PAUSED_DOWNLOAD_MESSAGE, lastChecked, progress: saved?.progress, resumeVerified: true, cancelRequested: false });
+          } else {
+            if (savedDownload) await this.downloadManager?.discard();
+            this.set({ ...updateDetails(info), status: 'available', message: 'A verified update is available. Download it when you are ready.', lastChecked, progress: undefined, resumeVerified: false });
+          }
         } else {
-          this.set({ status: 'current', latestVersion: this.state.currentVersion, releaseNotes: undefined, downloadSize: undefined, message: 'LinkSunder is up to date.', lastChecked, progress: undefined });
+          await this.downloadManager?.discard();
+          this.set({ status: 'current', latestVersion: this.state.currentVersion, releaseNotes: undefined, downloadSize: undefined, message: 'LinkSunder is up to date.', lastChecked, progress: undefined, resumeVerified: false });
         }
       } catch {
-        this.set({ status: 'error', message: 'Could not check or verify the update. Check your connection, then retry.', progress: undefined });
+        const saved = this.downloadManager?.getSavedDownload();
+        this.set({
+          status: saved ? 'paused' : 'error',
+          message: saved
+            ? 'Could not verify the saved update. It is still paused; check again before resuming.'
+            : 'Could not check or verify the update. Check your connection, then retry.',
+          latestVersion: saved?.version || this.state.latestVersion,
+          progress: saved?.progress,
+          resumeVerified: false,
+        });
       } finally {
         this.checkPromise = undefined;
       }
@@ -98,22 +133,44 @@ class UpdateController {
   }
 
   async download() {
-    if (!this.state.supported || !['available', 'cancelled', 'error'].includes(this.state.status)) return this.getState();
+    if (!this.state.supported || !['available', 'paused', 'cancelled', 'error'].includes(this.state.status)) return this.getState();
+    if (this.state.status === 'paused' && !this.state.resumeVerified) return this.getState();
     if (this.downloadPromise) return this.downloadPromise;
-    const token = this.tokenFactory();
+    const token = this.downloadManager ? undefined : this.tokenFactory();
     this.token = token;
-    this.set({ status: 'downloading', message: 'Downloading and verifying the update from GitHub Releases…', progress: undefined, cancelRequested: false });
+    this.set({ status: 'downloading', message: 'Downloading and verifying the update from GitHub Releases…', progress: this.state.progress, cancelRequested: false, pauseRequested: false });
     this.downloadPromise = (async () => {
       try {
-        const files = await this.updater.downloadUpdate(token);
-        if (token.cancelled) {
-          this.set({ status: 'cancelled', message: CANCELLED_DOWNLOAD_MESSAGE, progress: undefined, cancelRequested: false });
-        } else if (this.state.status === 'downloading' && files?.length) {
-          this.token = undefined;
-          this.set({ status: 'ready', message: 'Update ready. Restart and install when it suits you.', progress: undefined, cancelRequested: false });
+        if (this.downloadManager) {
+          if (!this.updateInfoAndProvider) throw new Error('Check for updates before downloading the package.');
+          const result = await this.downloadManager.download(this.updateInfoAndProvider, this.state.currentVersion, (progress) => {
+            if (this.state.status === 'downloading') this.set({ progress });
+          });
+          if (result.cancelled) {
+            this.set({ status: 'cancelled', message: CANCELLED_DOWNLOAD_MESSAGE, progress: undefined, cancelRequested: false, pauseRequested: false, resumeVerified: false });
+          } else if (result.paused) {
+            this.set({ status: 'paused', message: PAUSED_DOWNLOAD_MESSAGE, progress: result.progress, cancelRequested: false, pauseRequested: false, resumeVerified: true });
+          } else if (result.downloaded) {
+            this.set({ status: 'ready', message: 'Update ready. Restart and install when it suits you.', progress: undefined, cancelRequested: false, pauseRequested: false, resumeVerified: false });
+          }
+        } else {
+          const files = await this.updater.downloadUpdate(token);
+          if (token.cancelled) {
+            this.set({ status: 'cancelled', message: CANCELLED_DOWNLOAD_MESSAGE, progress: undefined, cancelRequested: false });
+          } else if (this.state.status === 'downloading' && files?.length) {
+            this.token = undefined;
+            this.set({ status: 'ready', message: 'Update ready. Restart and install when it suits you.', progress: undefined, cancelRequested: false });
+          }
         }
-      } catch {
-        this.set({ status: token.cancelled ? 'cancelled' : 'error', message: token.cancelled ? CANCELLED_DOWNLOAD_MESSAGE : 'The update download failed verification or was interrupted. Your current LinkSunder version is still available. Retry starts the download again.', progress: undefined, cancelRequested: false });
+      } catch (error) {
+        const saved = this.downloadManager?.getSavedDownload();
+        if (!this.downloadManager && token?.cancelled) {
+          this.set({ status: 'cancelled', message: CANCELLED_DOWNLOAD_MESSAGE, progress: undefined, cancelRequested: false, pauseRequested: false });
+        } else if (saved) {
+          this.set({ status: 'paused', message: `The update download stopped: ${error?.message || 'network error'}. Resume continues from the saved progress.`, progress: saved.progress, cancelRequested: false, pauseRequested: false, resumeVerified: true });
+        } else {
+          this.set({ status: 'error', message: `The update download failed verification or was interrupted: ${error?.message || 'check your connection and retry.'}`, progress: undefined, cancelRequested: false, pauseRequested: false, resumeVerified: false });
+        }
       } finally {
         this.token = undefined;
         this.downloadPromise = undefined;
@@ -123,11 +180,34 @@ class UpdateController {
     return this.downloadPromise;
   }
 
-  cancelDownload() {
-    if (!this.token || this.state.status !== 'downloading') return false;
+  async cancelDownload() {
+    const status = this.state.status;
+    if (!this.state.supported || !['downloading', 'paused', 'error'].includes(status)) return false;
+    if (!this.downloadManager && (!this.token || status !== 'downloading')) return false;
     this.set({ message: 'Cancelling the update download…', cancelRequested: true });
-    this.token.cancel();
+    if (this.downloadManager) {
+      if (status !== 'downloading') {
+        await this.downloadManager.discard();
+        this.set({ status: 'cancelled', message: CANCELLED_DOWNLOAD_MESSAGE, progress: undefined, cancelRequested: false, resumeVerified: false });
+      } else this.downloadManager.cancel();
+    } else this.token.cancel();
     return true;
+  }
+
+  pauseDownload() {
+    if (!this.downloadManager || this.state.status !== 'downloading') return false;
+    this.set({ message: 'Pausing the update download…', pauseRequested: true });
+    this.downloadManager.pause();
+    return true;
+  }
+
+  async pauseForShutdown() {
+    if (this.downloadManager && this.state.status === 'downloading') {
+      this.downloadManager.pause();
+      await this.downloadPromise;
+      return;
+    }
+    if (this.token && this.state.status === 'downloading') this.token.cancel();
   }
 
   async install() {

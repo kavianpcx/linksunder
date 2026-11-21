@@ -11,6 +11,7 @@ declare global {
       getUpdateState: () => Promise<UpdateState | undefined>;
       checkForUpdates: () => Promise<UpdateState | undefined>;
       downloadUpdate: () => Promise<UpdateState | undefined>;
+      pauseUpdateDownload: () => Promise<boolean>;
       cancelUpdateDownload: () => Promise<boolean>;
       installUpdate: () => Promise<boolean>;
       openReportDirectory: () => Promise<{ ok: boolean; error?: string }>;

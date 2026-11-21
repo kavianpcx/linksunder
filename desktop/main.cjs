@@ -5,8 +5,8 @@ const { URL } = require('node:url');
 const { setTimeout, clearTimeout, setInterval, clearInterval } = require('node:timers');
 const net = require('node:net');
 const { autoUpdater } = require('electron-updater');
-const { CancellationToken } = require('builder-util-runtime');
 const { UpdateController } = require('./update-controller.cjs');
+const { ResumableUpdateDownload } = require('./resumable-update-download.cjs');
 
 let engine;
 let window;
@@ -255,9 +255,16 @@ function updateSupport() {
 
 function createUpdateController() {
   const support = updateSupport();
+  const downloadManager = new ResumableUpdateDownload({
+    updater: autoUpdater,
+    directory: path.join(app.getPath('userData'), 'update-download'),
+    platform: process.platform,
+    getAppImagePath: () => process.env.APPIMAGE,
+    allowLocalhost: process.env.CI === 'true' && Boolean(process.env.LINKSUNDER_UPDATE_TEST_UPDATER_LOG),
+  });
   updateController = new UpdateController({
     updater: autoUpdater,
-    tokenFactory: () => new CancellationToken(),
+    downloadManager,
     initialState: {
       currentVersion: app.getVersion(),
       supported: support.supported,
@@ -348,6 +355,9 @@ function registerWindowIpc() {
   ipcMain.handle('linksunder:download-update', async (event) =>
     isTrustedWindow(event) ? updateController?.download() : undefined,
   );
+  ipcMain.handle('linksunder:pause-update-download', (event) =>
+    isTrustedWindow(event) ? updateController?.pauseDownload() : false,
+  );
   ipcMain.handle('linksunder:cancel-update-download', (event) =>
     isTrustedWindow(event) ? updateController?.cancelDownload() : false,
   );
@@ -373,7 +383,11 @@ function registerWindowIpc() {
 
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', (event) => {
-  updateController?.cancelDownload();
+  if (updateController?.getState().status === 'downloading') {
+    event.preventDefault();
+    void updateController.pauseForShutdown().finally(() => app.quit());
+    return;
+  }
   if (!engine || engineExited || shuttingDown) return;
   event.preventDefault();
   shuttingDown = true;
