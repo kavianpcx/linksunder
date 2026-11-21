@@ -341,6 +341,7 @@ test('New Test runs an evidence-based health check and a guided API failure work
   await page.getByRole('combobox', { name: 'Test type' }).click();
   await page.getByRole('option', { name: 'Slow API Response' }).click();
   await expect(page.getByLabel('Step 4 action')).toContainText('Delay API Response');
+  await page.getByLabel('Step 7 selector').fill('Sending…');
   await page.getByRole('checkbox', { name: 'I own this server or have permission to test it.' }).check();
   await page.getByRole('button', { name: 'Run Resilience Test', exact: true }).click();
   await expect(page.locator('.heading .badge')).toHaveText('PASS', { timeout: 20000 });
